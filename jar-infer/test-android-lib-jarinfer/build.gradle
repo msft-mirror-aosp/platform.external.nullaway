@@ -16,11 +16,8 @@
 
 apply plugin: 'com.android.library'
 
-sourceCompatibility = 1.8
-
 android {
     compileSdkVersion deps.build.compileSdkVersion
-    buildToolsVersion deps.build.buildToolsVersion
 
     defaultConfig {
         minSdkVersion deps.build.minSdkVersion

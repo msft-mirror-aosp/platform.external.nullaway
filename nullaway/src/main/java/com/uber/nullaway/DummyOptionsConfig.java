@@ -27,6 +27,7 @@ import static com.uber.nullaway.ErrorProneCLIFlagsConfig.FL_ANNOTATED_PACKAGES;
 
 import com.google.common.collect.ImmutableSet;
 import com.sun.tools.javac.code.Symbol;
+import com.uber.nullaway.fixserialization.FixSerializationConfig;
 import java.util.Set;
 import javax.annotation.Nullable;
 
@@ -54,7 +55,27 @@ public class DummyOptionsConfig implements Config {
   public DummyOptionsConfig() {}
 
   @Override
-  public boolean fromAnnotatedPackage(Symbol.ClassSymbol symbol) {
+  public boolean fromExplicitlyAnnotatedPackage(String className) {
+    throw new IllegalStateException(ERROR_MESSAGE);
+  }
+
+  @Override
+  public boolean fromExplicitlyUnannotatedPackage(String className) {
+    throw new IllegalStateException(ERROR_MESSAGE);
+  }
+
+  @Override
+  public boolean treatGeneratedAsUnannotated() {
+    throw new IllegalStateException(ERROR_MESSAGE);
+  }
+
+  @Override
+  public boolean serializationIsActive() {
+    throw new IllegalStateException(ERROR_MESSAGE);
+  }
+
+  @Override
+  public FixSerializationConfig getSerializationConfig() {
     throw new IllegalStateException(ERROR_MESSAGE);
   }
 
@@ -70,6 +91,11 @@ public class DummyOptionsConfig implements Config {
 
   @Override
   public ImmutableSet<String> getExcludedClassAnnotations() {
+    throw new IllegalStateException(ERROR_MESSAGE);
+  }
+
+  @Override
+  public ImmutableSet<String> getGeneratedCodeAnnotations() {
     throw new IllegalStateException(ERROR_MESSAGE);
   }
 
@@ -160,6 +186,11 @@ public class DummyOptionsConfig implements Config {
   }
 
   @Override
+  public boolean isSkippedLibraryModel(String classDotMethod) {
+    throw new IllegalStateException(ERROR_MESSAGE);
+  }
+
+  @Override
   public boolean isJarInferEnabled() {
     throw new IllegalStateException(ERROR_MESSAGE);
   }
@@ -186,12 +217,12 @@ public class DummyOptionsConfig implements Config {
   }
 
   @Override
-  public boolean treatGeneratedAsUnannotated() {
+  public boolean acknowledgeAndroidRecent() {
     throw new IllegalStateException(ERROR_MESSAGE);
   }
 
   @Override
-  public boolean acknowledgeAndroidRecent() {
+  public boolean isJSpecifyMode() {
     throw new IllegalStateException(ERROR_MESSAGE);
   }
 }
