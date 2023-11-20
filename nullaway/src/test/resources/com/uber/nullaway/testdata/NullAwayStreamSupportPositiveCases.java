@@ -22,6 +22,8 @@
 
 package com.uber.nullaway.testdata;
 
+import com.google.common.base.Preconditions;
+import com.uber.nullaway.testdata.unannotated.CustomStreamWithoutModel;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.DoubleStream;
@@ -150,5 +152,47 @@ public class NullAwayStreamSupportPositiveCases {
   private void forEachOrdered(Stream<NullableContainer<String>> stream) {
     // BUG: Diagnostic contains: dereferenced expression
     stream.forEachOrdered(s -> System.out.println(s.get().length()));
+  }
+
+  // CustomStreamWithoutModel is NOT modeled in TestLibraryModels
+  private CustomStreamWithoutModel<Integer> filterThenMapLambdasCustomStream(CustomStreamWithoutModel<String> stream) {
+    // Safe because generic is String, not @Nullable String
+    return stream.filter(s -> s != null).map(s -> s.length());
+  }
+
+  private CustomStreamWithoutModel<Integer> filterThenMapNullableContainerLambdasCustomStream(
+          CustomStreamWithoutModel<NullableContainer<String>> stream) {
+    return stream
+            .filter(c -> c.get() != null)
+            // BUG: Diagnostic contains: dereferenced expression
+            .map(c -> c.get().length());
+  }
+
+  private CustomStreamWithoutModel<Integer> filterThenMapMethodRefsCustomStream(
+          CustomStreamWithoutModel<NullableContainer<String>> stream) {
+    return stream
+            .filter(c -> c.get() != null && perhaps())
+            .map(NullableContainer::get) // CSWoM<NullableContainer<String>> -> CSWoM<@Nullable String>
+            .map(String::length); // Should be an error with proper generics support!
+  }
+
+  private static class CheckNonfinalBeforeStream<T> {
+    @Nullable private T ref;
+
+    public CheckNonfinalBeforeStream(@Nullable T ref) {
+      this.ref = ref;
+    }
+
+    private Stream<T> test1(Stream<T> stream) {
+      Preconditions.checkNotNull(ref);
+      final T asLocal = ref;
+      return stream.filter(s -> asLocal.equals(s));
+    }
+
+    private Stream<T> test2(Stream<T> stream) {
+      Preconditions.checkNotNull(ref);
+      // BUG: Diagnostic contains: dereferenced expression ref is @Nullable
+      return stream.filter(s -> ref.equals(s));
+    }
   }
 }
