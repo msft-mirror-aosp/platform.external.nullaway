@@ -22,6 +22,9 @@
 
 package com.uber.nullaway.handlers;
 
+import static com.uber.nullaway.ASTHelpersBackports.getEnclosedElements;
+import static com.uber.nullaway.NullabilityUtil.castToNonNull;
+
 import com.google.common.base.Preconditions;
 import com.google.errorprone.VisitorState;
 import com.google.errorprone.util.ASTHelpers;
@@ -46,6 +49,7 @@ import javax.lang.model.element.VariableElement;
 public abstract class AbstractFieldContractHandler extends BaseNoOpHandler {
 
   protected static final String THIS_NOTATION = "this.";
+
   /** Simple name of the annotation in {@code String} */
   protected final String annotName;
 
@@ -69,7 +73,8 @@ public abstract class AbstractFieldContractHandler extends BaseNoOpHandler {
     boolean isAnnotated = annotationContent != null;
     boolean isValid =
         isAnnotated
-            && validateAnnotationSyntax(annotationContent, analysis, tree, state, methodSymbol)
+            && validateAnnotationSyntax(
+                castToNonNull(annotationContent), analysis, tree, state, methodSymbol)
             && validateAnnotationSemantics(analysis, state, tree, methodSymbol);
     if (isAnnotated && !isValid) {
       return;
@@ -81,7 +86,7 @@ public abstract class AbstractFieldContractHandler extends BaseNoOpHandler {
     }
     Set<String> fieldNames;
     if (isAnnotated) {
-      fieldNames = ContractUtils.trimReceivers(annotationContent);
+      fieldNames = ContractUtils.trimReceivers(castToNonNull(annotationContent));
     } else {
       fieldNames = Collections.emptySet();
     }
@@ -153,7 +158,8 @@ public abstract class AbstractFieldContractHandler extends BaseNoOpHandler {
                   new ErrorMessage(ErrorMessage.MessageTypes.ANNOTATION_VALUE_INVALID, message),
                   tree,
                   analysis.buildDescription(tree),
-                  state));
+                  state,
+                  null));
       return false;
     } else {
       for (String fieldName : content) {
@@ -174,13 +180,14 @@ public abstract class AbstractFieldContractHandler extends BaseNoOpHandler {
                             ErrorMessage.MessageTypes.ANNOTATION_VALUE_INVALID, message),
                         tree,
                         analysis.buildDescription(tree),
-                        state));
+                        state,
+                        null));
             return false;
           } else {
             fieldName = fieldName.substring(fieldName.lastIndexOf(".") + 1);
           }
         }
-        Symbol.ClassSymbol classSymbol = ASTHelpers.enclosingClass(methodSymbol);
+        Symbol.ClassSymbol classSymbol = castToNonNull(ASTHelpers.enclosingClass(methodSymbol));
         VariableElement field = getInstanceFieldOfClass(classSymbol, fieldName);
         if (field == null) {
           message =
@@ -197,7 +204,8 @@ public abstract class AbstractFieldContractHandler extends BaseNoOpHandler {
                       new ErrorMessage(ErrorMessage.MessageTypes.ANNOTATION_VALUE_INVALID, message),
                       tree,
                       analysis.buildDescription(tree),
-                      state));
+                      state,
+                      null));
           return false;
         }
       }
@@ -215,7 +223,7 @@ public abstract class AbstractFieldContractHandler extends BaseNoOpHandler {
   public static @Nullable VariableElement getInstanceFieldOfClass(
       Symbol.ClassSymbol classSymbol, String name) {
     Preconditions.checkNotNull(classSymbol);
-    for (Element member : classSymbol.getEnclosedElements()) {
+    for (Element member : getEnclosedElements(classSymbol)) {
       if (member.getKind().isField() && !member.getModifiers().contains(Modifier.STATIC)) {
         if (member.getSimpleName().toString().equals(name)) {
           return (VariableElement) member;
