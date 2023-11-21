@@ -17,6 +17,8 @@ import org.checkerframework.nullaway.javacutil.AnnotationUtils;
 /** An utility class for {@link ContractHandler} and {@link ContractCheckHandler}. */
 public class ContractUtils {
 
+  private static final String[] EMPTY_STRING_ARRAY = new String[0];
+
   /**
    * Returns a set of field names excluding their receivers (e.g. "this.a" will be "a")
    *
@@ -24,8 +26,7 @@ public class ContractUtils {
    * @return A set of trimmed field names.
    */
   public static Set<String> trimReceivers(Set<String> fieldNames) {
-    return fieldNames
-        .stream()
+    return fieldNames.stream()
         .map((Function<String, String>) input -> input.substring(input.lastIndexOf(".") + 1))
         .collect(Collectors.toSet());
   }
@@ -58,7 +59,8 @@ public class ContractUtils {
                   new ErrorMessage(ErrorMessage.MessageTypes.ANNOTATION_VALUE_INVALID, message),
                   tree,
                   analysis.buildDescription(tree),
-                  state));
+                  state,
+                  null));
     }
     return parts[1].trim();
   }
@@ -84,7 +86,7 @@ public class ContractUtils {
 
     String[] parts = clause.split("->");
 
-    String[] antecedent = parts[0].split(",");
+    String[] antecedent = parts[0].trim().isEmpty() ? new String[0] : parts[0].split(",");
 
     if (antecedent.length != numOfArguments) {
       String message =
@@ -105,7 +107,8 @@ public class ContractUtils {
                   new ErrorMessage(ErrorMessage.MessageTypes.ANNOTATION_VALUE_INVALID, message),
                   tree,
                   analysis.buildDescription(tree),
-                  state));
+                  state,
+                  null));
     }
     return antecedent;
   }
@@ -126,5 +129,17 @@ public class ContractUtils {
       }
     }
     return null;
+  }
+
+  static String[] getContractClauses(Symbol.MethodSymbol callee, Config config) {
+    // Check to see if this method has an @Contract annotation
+    String contractString = getContractString(callee, config);
+    if (contractString != null) {
+      String trimmedContractString = contractString.trim();
+      if (!trimmedContractString.isEmpty()) {
+        return trimmedContractString.split(";");
+      }
+    }
+    return EMPTY_STRING_ARRAY;
   }
 }

@@ -35,14 +35,19 @@ import com.sun.tools.javac.code.Symbol;
 import com.sun.tools.javac.code.Types;
 import com.sun.tools.javac.util.Context;
 import com.uber.nullaway.ErrorMessage;
+import com.uber.nullaway.LibraryModels;
 import com.uber.nullaway.NullAway;
 import com.uber.nullaway.Nullness;
 import com.uber.nullaway.dataflow.AccessPath;
+import com.uber.nullaway.dataflow.AccessPathNullnessAnalysis;
 import com.uber.nullaway.dataflow.AccessPathNullnessPropagation;
 import com.uber.nullaway.dataflow.NullnessStore;
+import com.uber.nullaway.dataflow.cfg.NullAwayCFGBuilder;
 import java.util.List;
 import java.util.Optional;
+import javax.annotation.Nullable;
 import org.checkerframework.nullaway.dataflow.cfg.UnderlyingAST;
+import org.checkerframework.nullaway.dataflow.cfg.node.FieldAccessNode;
 import org.checkerframework.nullaway.dataflow.cfg.node.LocalVariableNode;
 import org.checkerframework.nullaway.dataflow.cfg.node.MethodInvocationNode;
 
@@ -131,72 +136,69 @@ public interface Handler {
   void onMatchReturn(NullAway analysis, ReturnTree tree, VisitorState state);
 
   /**
-   * Called when NullAway encounters an unannotated method and asks for params explicitly
-   * marked @Nullable
-   *
-   * <p>This is mostly used to force overriding methods to also use @Nullable, e.g. for callbacks
-   * that can get passed null values.
-   *
-   * <p>Note that this should be only used for parameters EXPLICLTY marked as @Nullable (e.g. by
-   * library models) rather than those considered @Nullable by NullAway's default optimistic
-   * assumptions.
-   *
-   * @param methodSymbol The method symbol for the unannotated method in question.
-   * @param explicitlyNullablePositions Parameter nullability computed by upstream handlers (the
-   *     core analysis supplies the empty set to the first handler in the chain).
-   * @return Updated parameter nullability computed by this handler.
-   */
-  ImmutableSet<Integer> onUnannotatedInvocationGetExplicitlyNullablePositions(
-      Context context,
-      Symbol.MethodSymbol methodSymbol,
-      ImmutableSet<Integer> explicitlyNullablePositions);
-
-  /**
-   * Called when NullAway encounters an unannotated method and asks if return value is explicitly
-   * marked @Nullable
-   *
-   * <p>Note that this should be only used for return values EXPLICLTY marked as @NonNull (e.g. by
-   * library models) rather than those considered @Nullable by NullAway's default optimistic
-   * assumptions.
-   *
-   * @param methodSymbol The method symbol for the unannotated method in question.
-   * @param explicitlyNonNullReturn return nullability computed by upstream handlers.
-   * @return Updated return nullability computed by this handler.
-   */
-  boolean onUnannotatedInvocationGetExplicitlyNonNullReturn(
-      Symbol.MethodSymbol methodSymbol, boolean explicitlyNonNullReturn);
-
-  /**
-   * Called when NullAway encounters an unannotated method and asks for params default nullability
-   *
-   * @param analysis A reference to the running NullAway analysis.
-   * @param state The current visitor state.
-   * @param methodSymbol The method symbol for the unannotated method in question.
-   * @param actualParams The actual parameters from the invocation node
-   * @param nonNullPositions Parameter nullability computed by upstream handlers (the core analysis
-   *     supplies the empty set to the first handler in the chain).
-   * @return Updated parameter nullability computed by this handler.
-   */
-  ImmutableSet<Integer> onUnannotatedInvocationGetNonNullPositions(
-      NullAway analysis,
-      VisitorState state,
-      Symbol.MethodSymbol methodSymbol,
-      List<? extends ExpressionTree> actualParams,
-      ImmutableSet<Integer> nonNullPositions);
-
-  /**
    * Called after the analysis determines if a expression can be null or not, allowing handlers to
    * override.
    *
    * @param analysis A reference to the running NullAway analysis.
    * @param expr The expression in question.
+   * @param exprSymbol The symbol of the expression, might be null
    * @param state The current visitor state.
    * @param exprMayBeNull Whether or not the expression may be null according to the base analysis
    *     or upstream handlers.
    * @return Whether or not the expression may be null, as updated by this handler.
    */
   boolean onOverrideMayBeNullExpr(
-      NullAway analysis, ExpressionTree expr, VisitorState state, boolean exprMayBeNull);
+      NullAway analysis,
+      ExpressionTree expr,
+      @Nullable Symbol exprSymbol,
+      VisitorState state,
+      boolean exprMayBeNull);
+
+  /**
+   * Called to potentially override the nullability of an annotated or unannotated method's return,
+   * when only the method symbol (and not a full invocation tree) is available. This is used
+   * primarily for checking subtyping / method overrides.
+   *
+   * @param methodSymbol The method symbol for the method in question.
+   * @param state The current visitor state.
+   * @param isAnnotated A boolean flag indicating whether the called method is considered to be
+   *     within annotated or unannotated code, used to avoid querying for this information multiple
+   *     times within the same handler chain.
+   * @param returnNullness return nullness computed by upstream handlers or NullAway core.
+   * @return Updated return nullability computed by this handler.
+   */
+  Nullness onOverrideMethodReturnNullability(
+      Symbol.MethodSymbol methodSymbol,
+      VisitorState state,
+      boolean isAnnotated,
+      Nullness returnNullness);
+
+  /**
+   * Called after the analysis determines the nullability of a method's arguments, allowing handlers
+   * to override.
+   *
+   * <p>The passed Map object maps argument positions to nullness information and is sparse, where
+   * the nullness of missing indexes is determined by base analysis and depends on if the code is
+   * considered isAnnotated or not. We use a mutable map for performance, but it should not outlive
+   * the chain of handler invocations.
+   *
+   * @param context The current context.
+   * @param methodSymbol The method symbol for the method in question.
+   * @param isAnnotated A boolean flag indicating whether the called method is considered to be
+   *     within isAnnotated or unannotated code, used to avoid querying for this information
+   *     multiple times within the same handler chain.
+   * @param argumentPositionNullness Nullness info for each argument position as computed by
+   *     upstream handlers and/or the base analysis. Some entries may be {@code null}, indicating
+   *     upstream handlers and the base analysis consider the parameter to be nullness-unknown,
+   *     usually since the parameter is from unannotated code.
+   * @return The updated nullness info for each argument position, as computed by the current
+   *     handler.
+   */
+  Nullness[] onOverrideMethodInvocationParametersNullability(
+      Context context,
+      Symbol.MethodSymbol methodSymbol,
+      boolean isAnnotated,
+      Nullness[] argumentPositionNullness);
 
   /**
    * Called when the Dataflow analysis generates the initial NullnessStore for a method or lambda.
@@ -220,7 +222,8 @@ public interface Handler {
    * Called when the Dataflow analysis visits each method invocation.
    *
    * @param node The AST node for the method callsite.
-   * @param types {@link Types} for the current compilation
+   * @param symbol The symbol of the called method
+   * @param state The current visitor state.
    * @param apContext the current access path context information (see {@link
    *     AccessPath.AccessPathContext}).
    * @param inputs NullnessStore information known before the method invocation.
@@ -236,13 +239,37 @@ public interface Handler {
    */
   NullnessHint onDataflowVisitMethodInvocation(
       MethodInvocationNode node,
-      Types types,
-      Context context,
+      Symbol.MethodSymbol symbol,
+      VisitorState state,
       AccessPath.AccessPathContext apContext,
       AccessPathNullnessPropagation.SubNodeValues inputs,
       AccessPathNullnessPropagation.Updates thenUpdates,
       AccessPathNullnessPropagation.Updates elseUpdates,
       AccessPathNullnessPropagation.Updates bothUpdates);
+
+  /**
+   * Called when the Dataflow analysis visits each field access.
+   *
+   * @param node The AST node for the field access.
+   * @param symbol The {@link Symbol} object for the above node, provided for convenience.
+   * @param types {@link Types} for the current compilation
+   * @param context the javac Context object (or Error Prone SubContext)
+   * @param apContext the current access path context information (see {@link
+   *     AccessPath.AccessPathContext}).
+   * @param inputs NullnessStore information known before the method invocation.
+   * @param updates NullnessStore updates to be added, handlers can add via the set() method.
+   * @return The Nullness information for this field computed by this handler. See NullnessHint and
+   *     CompositeHandler for more information about how this values get merged into a final
+   *     Nullness value.
+   */
+  NullnessHint onDataflowVisitFieldAccess(
+      FieldAccessNode node,
+      Symbol symbol,
+      Types types,
+      Context context,
+      AccessPath.AccessPathContext apContext,
+      AccessPathNullnessPropagation.SubNodeValues inputs,
+      AccessPathNullnessPropagation.Updates updates);
 
   /**
    * Called when the Dataflow analysis visits a return statement.
@@ -315,8 +342,59 @@ public interface Handler {
   ImmutableSet<String> onRegisterImmutableTypes();
 
   /**
+   * Called when a method writes a {@code @NonNull} value to a class field.
+   *
+   * @param field Symbol of the initialized class field.
+   * @param analysis nullness dataflow analysis
+   * @param state VisitorState.
+   */
+  void onNonNullFieldAssignment(
+      Symbol field, AccessPathNullnessAnalysis analysis, VisitorState state);
+
+  /**
+   * Called during AST to CFG translation (CFGTranslationPhaseOne) immediately after translating a
+   * MethodInvocationTree.
+   *
+   * @param phase a reference to the NullAwayCFGTranslationPhaseOne object and its utility
+   *     functions.
+   * @param tree the MethodInvocationTree being translated.
+   * @param originalNode the resulting MethodInvocationNode right before this handler is called.
+   * @return a MethodInvocationNode which might be originalNode or a modified version, this is
+   *     passed to the next handler in the chain.
+   */
+  MethodInvocationNode onCFGBuildPhase1AfterVisitMethodInvocation(
+      NullAwayCFGBuilder.NullAwayCFGTranslationPhaseOne phase,
+      MethodInvocationTree tree,
+      MethodInvocationNode originalNode);
+
+  /**
+   * Called to determine when a method acts as a cast-to-non-null operation on its parameters.
+   *
+   * <p>See {@link LibraryModels#castToNonNullMethods()} for more information about general
+   * configuration of <code>castToNonNull</code> methods.
+   *
+   * @param analysis A reference to the running NullAway analysis.
+   * @param state The current visitor state.
+   * @param methodSymbol The method symbol for the potential castToNonNull method.
+   * @param actualParams The actual parameters from the invocation node
+   * @param previousArgumentPosition The result computed by the previous handler in the chain, if
+   *     any.
+   * @return The index of the parameter for which the method should act as a cast (if any). This
+   *     value can be set only once through the full chain of handlers, with each handler deciding
+   *     whether to propagate or override the value previousArgumentPosition passed by the previous
+   *     handler in the chain.
+   */
+  @Nullable
+  Integer castToNonNullArgumentPositionsForMethod(
+      NullAway analysis,
+      VisitorState state,
+      Symbol.MethodSymbol methodSymbol,
+      List<? extends ExpressionTree> actualParams,
+      @Nullable Integer previousArgumentPosition);
+
+  /**
    * A three value enum for handlers implementing onDataflowVisitMethodInvocation to communicate
-   * their knowledge of the method return nullability to the the rest of NullAway.
+   * their knowledge of the method return nullability to the rest of NullAway.
    */
   public enum NullnessHint {
     /**
