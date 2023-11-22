@@ -24,16 +24,17 @@ package com.uber.nullaway;
 
 import com.google.auto.value.AutoValue;
 import com.google.common.base.Joiner;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.errorprone.util.ASTHelpers;
 import com.sun.tools.javac.code.Symbol;
-import java.util.LinkedHashSet;
-import java.util.Set;
+import com.uber.nullaway.fixserialization.FixSerializationConfig;
 import java.util.regex.Pattern;
 import javax.annotation.Nullable;
 
 /** abstract base class for null checker {@link Config} implementations */
+@SuppressWarnings("NullAway") // TODO: get rid of this class to avoid suppression
 public abstract class AbstractConfig implements Config {
 
   /**
@@ -74,31 +75,33 @@ public abstract class AbstractConfig implements Config {
 
   protected boolean handleTestAssertionLibraries;
 
-  protected Set<String> optionalClassPaths;
+  protected ImmutableSet<String> optionalClassPaths;
 
   protected boolean assertsEnabled;
 
-  /**
-   * if true, {@link #fromAnnotatedPackage(Symbol.ClassSymbol)} will return false for any class
-   * annotated with {@link javax.annotation.Generated}
-   */
   protected boolean treatGeneratedAsUnannotated;
 
   protected boolean acknowledgeAndroidRecent;
 
-  protected Set<MethodClassAndName> knownInitializers;
+  protected boolean jspecifyMode;
 
-  protected Set<String> excludedClassAnnotations;
+  protected ImmutableSet<MethodClassAndName> knownInitializers;
 
-  protected Set<String> initializerAnnotations;
+  protected ImmutableSet<String> excludedClassAnnotations;
 
-  protected Set<String> externalInitAnnotations;
+  protected ImmutableSet<String> generatedCodeAnnotations;
 
-  protected Set<String> contractAnnotations;
+  protected ImmutableSet<String> initializerAnnotations;
+
+  protected ImmutableSet<String> externalInitAnnotations;
+
+  protected ImmutableSet<String> contractAnnotations;
 
   @Nullable protected String castToNonNullMethod;
 
   protected String autofixSuppressionComment;
+
+  protected ImmutableSet<String> skippedLibraryModels;
 
   /** --- JarInfer configs --- */
   protected boolean jarInferEnabled;
@@ -111,11 +114,32 @@ public abstract class AbstractConfig implements Config {
   protected String errorURL;
 
   /** --- Fully qualified names of custom nonnull/nullable annotation --- */
-  protected Set<String> customNonnullAnnotations;
+  protected ImmutableSet<String> customNonnullAnnotations;
 
-  protected Set<String> customNullableAnnotations;
+  protected ImmutableSet<String> customNullableAnnotations;
 
-  protected static Pattern getPackagePattern(Set<String> packagePrefixes) {
+  /**
+   * If active, NullAway will write all reporting errors in output directory. The output directory
+   * along with the activation status of other serialization features are stored in {@link
+   * FixSerializationConfig}.
+   */
+  protected boolean serializationActivationFlag;
+
+  protected FixSerializationConfig fixSerializationConfig;
+
+  @Override
+  public boolean serializationIsActive() {
+    return serializationActivationFlag;
+  }
+
+  @Override
+  public FixSerializationConfig getSerializationConfig() {
+    Preconditions.checkArgument(
+        serializationActivationFlag, "Fix Serialization is not active, cannot access it's config.");
+    return fixSerializationConfig;
+  }
+
+  protected static Pattern getPackagePattern(ImmutableSet<String> packagePrefixes) {
     // noinspection ConstantConditions
     String choiceRegexp =
         Joiner.on("|")
@@ -124,12 +148,18 @@ public abstract class AbstractConfig implements Config {
   }
 
   @Override
-  public boolean fromAnnotatedPackage(Symbol.ClassSymbol symbol) {
-    String className = symbol.getQualifiedName().toString();
-    return annotatedPackages.matcher(className).matches()
-        && !unannotatedSubPackages.matcher(className).matches()
-        && (!treatGeneratedAsUnannotated
-            || !ASTHelpers.hasDirectAnnotationWithSimpleName(symbol, "Generated"));
+  public boolean fromExplicitlyAnnotatedPackage(String className) {
+    return annotatedPackages.matcher(className).matches();
+  }
+
+  @Override
+  public boolean fromExplicitlyUnannotatedPackage(String className) {
+    return unannotatedSubPackages.matcher(className).matches();
+  }
+
+  @Override
+  public boolean treatGeneratedAsUnannotated() {
+    return treatGeneratedAsUnannotated;
   }
 
   @Override
@@ -161,7 +191,12 @@ public abstract class AbstractConfig implements Config {
 
   @Override
   public ImmutableSet<String> getExcludedClassAnnotations() {
-    return ImmutableSet.copyOf(excludedClassAnnotations);
+    return excludedClassAnnotations;
+  }
+
+  @Override
+  public ImmutableSet<String> getGeneratedCodeAnnotations() {
+    return generatedCodeAnnotations;
   }
 
   @Override
@@ -225,7 +260,7 @@ public abstract class AbstractConfig implements Config {
   }
 
   @Override
-  public Set<String> getOptionalClassPaths() {
+  public ImmutableSet<String> getOptionalClassPaths() {
     return optionalClassPaths;
   }
 
@@ -259,15 +294,9 @@ public abstract class AbstractConfig implements Config {
     return contractAnnotations.contains(annotationName);
   }
 
-  protected Set<MethodClassAndName> getKnownInitializers(Set<String> qualifiedNames) {
-    Set<MethodClassAndName> result = new LinkedHashSet<>();
-    for (String name : qualifiedNames) {
-      int lastDot = name.lastIndexOf('.');
-      String methodName = name.substring(lastDot + 1);
-      String className = name.substring(0, lastDot);
-      result.add(MethodClassAndName.create(className, methodName));
-    }
-    return result;
+  @Override
+  public boolean isSkippedLibraryModel(String classDotMethod) {
+    return skippedLibraryModels.contains(classDotMethod);
   }
 
   @AutoValue
@@ -275,6 +304,13 @@ public abstract class AbstractConfig implements Config {
 
     static MethodClassAndName create(String enclosingClass, String methodName) {
       return new AutoValue_AbstractConfig_MethodClassAndName(enclosingClass, methodName);
+    }
+
+    static MethodClassAndName fromClassDotMethod(String classDotMethod) {
+      int lastDot = classDotMethod.lastIndexOf('.');
+      String methodName = classDotMethod.substring(lastDot + 1);
+      String className = classDotMethod.substring(0, lastDot);
+      return MethodClassAndName.create(className, methodName);
     }
 
     abstract String enclosingClass();
@@ -309,12 +345,12 @@ public abstract class AbstractConfig implements Config {
   }
 
   @Override
-  public boolean treatGeneratedAsUnannotated() {
-    return treatGeneratedAsUnannotated;
+  public boolean acknowledgeAndroidRecent() {
+    return acknowledgeAndroidRecent;
   }
 
   @Override
-  public boolean acknowledgeAndroidRecent() {
-    return acknowledgeAndroidRecent;
+  public boolean isJSpecifyMode() {
+    return jspecifyMode;
   }
 }

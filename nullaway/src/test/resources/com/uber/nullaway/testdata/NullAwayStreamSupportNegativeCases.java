@@ -22,7 +22,9 @@
 
 package com.uber.nullaway.testdata;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.uber.nullaway.testdata.unannotated.CustomStream;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.DoubleStream;
@@ -177,6 +179,11 @@ public class NullAwayStreamSupportNegativeCases {
             });
   }
 
+  private Stream<String> filterThenMapStreamOfMapsWithGet(
+      Stream<java.util.Map<String, Integer>> stream) {
+    return stream.filter(m -> m.get("hello") != null).map(n -> n.get("hello").toString());
+  }
+
   private static class NoOpFilterClass<T> implements Predicate<T> {
     public NoOpFilterClass() {}
 
@@ -280,5 +287,54 @@ public class NullAwayStreamSupportNegativeCases {
 
   private void filterThenForEachOrdered(Stream<NullableContainer<String>> stream) {
     stream.filter(s -> s.get() != null).forEachOrdered(s -> System.out.println(s.get().length()));
+  }
+
+  // CustomStream is modeled in TestLibraryModels
+  private CustomStream<Integer> filterThenMapLambdasCustomStream(CustomStream<String> stream) {
+    return stream.filter(s -> s != null).map(s -> s.length());
+  }
+
+  private CustomStream<Integer> filterThenMapNullableContainerLambdasCustomStream(
+            CustomStream<NullableContainer<String>> stream) {
+        return stream
+                .filter(c -> c.get() != null)
+                .map(c -> c.get().length());
+    }
+
+  private CustomStream<Integer> filterThenMapMethodRefsCustomStream(
+      CustomStream<NullableContainer<String>> stream) {
+    return stream
+        .filter(c -> c.get() != null && perhaps())
+        .map(NullableContainer::get)
+        .map(String::length);
+  }
+
+  private static class CheckFinalBeforeStream<T> {
+    @Nullable private final T ref;
+
+    public CheckFinalBeforeStream(@Nullable T ref) {
+      this.ref = ref;
+    }
+
+    private Stream<T> test1(Stream<T> stream) {
+      Preconditions.checkNotNull(ref);
+      final T asLocal = ref;
+      return stream.filter(s -> asLocal.equals(s));
+    }
+
+    private Stream<T> test2(Stream<T> stream) {
+      Preconditions.checkNotNull(ref);
+      // Safe because ref is final!
+      return stream.filter(s -> ref.equals(s));
+    }
+
+    private Stream<T> test3(Stream<T> stream) {
+      if (ref != null) {
+        // Safe because ref is final!
+        return stream.filter(s -> ref.equals(s));
+      } else {
+        return stream.filter(s -> "CONST".equals(s.toString()));
+      }
+    }
   }
 }
