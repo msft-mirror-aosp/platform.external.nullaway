@@ -16,6 +16,8 @@
 package com.uber.nullaway.dataflow;
 
 import static com.google.common.base.Preconditions.checkNotNull;
+import static com.uber.nullaway.ASTHelpersBackports.isStatic;
+import static com.uber.nullaway.NullabilityUtil.castToNonNull;
 import static com.uber.nullaway.Nullness.BOTTOM;
 import static com.uber.nullaway.Nullness.NONNULL;
 import static com.uber.nullaway.Nullness.NULLABLE;
@@ -27,10 +29,13 @@ import com.google.errorprone.VisitorState;
 import com.google.errorprone.suppliers.Supplier;
 import com.google.errorprone.suppliers.Suppliers;
 import com.google.errorprone.util.ASTHelpers;
+import com.sun.source.tree.MethodInvocationTree;
 import com.sun.tools.javac.code.Symbol;
 import com.sun.tools.javac.code.Type;
 import com.sun.tools.javac.code.TypeTag;
+import com.uber.nullaway.CodeAnnotationInfo;
 import com.uber.nullaway.Config;
+import com.uber.nullaway.GenericsChecks;
 import com.uber.nullaway.NullabilityUtil;
 import com.uber.nullaway.Nullness;
 import com.uber.nullaway.handlers.Handler;
@@ -43,6 +48,7 @@ import javax.annotation.CheckReturnValue;
 import javax.annotation.Nullable;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.VariableElement;
+import javax.lang.model.type.TypeKind;
 import org.checkerframework.nullaway.dataflow.analysis.ConditionalTransferResult;
 import org.checkerframework.nullaway.dataflow.analysis.ForwardTransferFunction;
 import org.checkerframework.nullaway.dataflow.analysis.RegularTransferResult;
@@ -66,9 +72,11 @@ import org.checkerframework.nullaway.dataflow.cfg.node.ClassNameNode;
 import org.checkerframework.nullaway.dataflow.cfg.node.ConditionalAndNode;
 import org.checkerframework.nullaway.dataflow.cfg.node.ConditionalNotNode;
 import org.checkerframework.nullaway.dataflow.cfg.node.ConditionalOrNode;
+import org.checkerframework.nullaway.dataflow.cfg.node.DeconstructorPatternNode;
 import org.checkerframework.nullaway.dataflow.cfg.node.DoubleLiteralNode;
 import org.checkerframework.nullaway.dataflow.cfg.node.EqualToNode;
 import org.checkerframework.nullaway.dataflow.cfg.node.ExplicitThisNode;
+import org.checkerframework.nullaway.dataflow.cfg.node.ExpressionStatementNode;
 import org.checkerframework.nullaway.dataflow.cfg.node.FieldAccessNode;
 import org.checkerframework.nullaway.dataflow.cfg.node.FloatLiteralNode;
 import org.checkerframework.nullaway.dataflow.cfg.node.FloatingDivisionNode;
@@ -107,7 +115,6 @@ import org.checkerframework.nullaway.dataflow.cfg.node.PrimitiveTypeNode;
 import org.checkerframework.nullaway.dataflow.cfg.node.ReturnNode;
 import org.checkerframework.nullaway.dataflow.cfg.node.ShortLiteralNode;
 import org.checkerframework.nullaway.dataflow.cfg.node.SignedRightShiftNode;
-import org.checkerframework.nullaway.dataflow.cfg.node.StringConcatenateAssignmentNode;
 import org.checkerframework.nullaway.dataflow.cfg.node.StringConcatenateNode;
 import org.checkerframework.nullaway.dataflow.cfg.node.StringConversionNode;
 import org.checkerframework.nullaway.dataflow.cfg.node.StringLiteralNode;
@@ -171,7 +178,12 @@ public class AccessPathNullnessPropagation
   }
 
   private static SubNodeValues values(final TransferInput<Nullness, NullnessStore> input) {
-    return input::getValueOfSubNode;
+    return new SubNodeValues() {
+      @Override
+      public Nullness valueOfSubNode(Node node) {
+        return castToNonNull(input.getValueOfSubNode(node));
+      }
+    };
   }
 
   /**
@@ -366,13 +378,6 @@ public class AccessPathNullnessPropagation
   }
 
   @Override
-  public TransferResult<Nullness, NullnessStore> visitStringConcatenateAssignment(
-      StringConcatenateAssignmentNode stringConcatenateAssignmentNode,
-      TransferInput<Nullness, NullnessStore> input) {
-    return noStoreChanges(NULLABLE, input);
-  }
-
-  @Override
   public TransferResult<Nullness, NullnessStore> visitLessThan(
       LessThanNode lessThanNode, TransferInput<Nullness, NullnessStore> input) {
     return noStoreChanges(NONNULL, input);
@@ -448,14 +453,14 @@ public class AccessPathNullnessPropagation
     Node realLeftNode = unwrapAssignExpr(leftNode);
     Node realRightNode = unwrapAssignExpr(rightNode);
 
-    AccessPath leftAP = AccessPath.getAccessPathForNodeWithMapGet(realLeftNode, state, apContext);
+    AccessPath leftAP = AccessPath.getAccessPathForNode(realLeftNode, state, apContext);
     if (leftAP != null) {
       equalBranchUpdates.set(leftAP, equalBranchValue);
       notEqualBranchUpdates.set(
           leftAP, leftVal.greatestLowerBound(rightVal.deducedValueWhenNotEqual()));
     }
 
-    AccessPath rightAP = AccessPath.getAccessPathForNodeWithMapGet(realRightNode, state, apContext);
+    AccessPath rightAP = AccessPath.getAccessPathForNode(realRightNode, state, apContext);
     if (rightAP != null) {
       equalBranchUpdates.set(rightAP, equalBranchValue);
       notEqualBranchUpdates.set(
@@ -486,12 +491,10 @@ public class AccessPathNullnessPropagation
   @Override
   public TransferResult<Nullness, NullnessStore> visitTernaryExpression(
       TernaryExpressionNode node, TransferInput<Nullness, NullnessStore> input) {
-    SubNodeValues inputs = values(input);
-    Nullness result =
-        inputs
-            .valueOfSubNode(node.getThenOperand())
-            .leastUpperBound(inputs.valueOfSubNode(node.getElseOperand()));
-    return new RegularTransferResult<>(result, input.getRegularStore());
+    // The cfg includes assignments of the value of the "then" and "else" sub-expressions to the
+    // synthetic variable for the ternary expression.  So, the dataflow result for the ternary
+    // expression is just the result for the synthetic variable
+    return visitLocalVariable(node.getTernaryExpressionVar(), input);
   }
 
   @Override
@@ -512,7 +515,7 @@ public class AccessPathNullnessPropagation
     Node target = node.getTarget();
 
     if (target instanceof LocalVariableNode
-        && !ASTHelpers.getType(target.getTree()).isPrimitive()) {
+        && !castToNonNull(ASTHelpers.getType(target.getTree())).isPrimitive()) {
       LocalVariableNode localVariableNode = (LocalVariableNode) target;
       updates.set(localVariableNode, value);
       handleEnhancedForOverKeySet(localVariableNode, rhs, input, updates);
@@ -523,15 +526,19 @@ public class AccessPathNullnessPropagation
     }
 
     if (target instanceof FieldAccessNode) {
-      // we don't allow arbitrary access paths to be tracked from assignments
-      // here we still require an access of a field of this, or a static field
       FieldAccessNode fieldAccessNode = (FieldAccessNode) target;
       Node receiver = fieldAccessNode.getReceiver();
       setNonnullIfAnalyzeable(updates, receiver);
-      if ((receiver instanceof ThisNode || fieldAccessNode.isStatic())
-          && fieldAccessNode.getElement().getKind().equals(ElementKind.FIELD)
-          && !ASTHelpers.getType(target.getTree()).isPrimitive()) {
-        updates.set(fieldAccessNode, value);
+      if (fieldAccessNode.getElement().getKind().equals(ElementKind.FIELD)
+          && !castToNonNull(ASTHelpers.getType(target.getTree())).isPrimitive()) {
+        if (receiver instanceof ThisNode || fieldAccessNode.isStatic()) {
+          // Guaranteed to produce a valid access path, we call updates.set
+          updates.set(fieldAccessNode, value);
+        } else {
+          // Might not be a valid access path, e.g. it might ultimately be rooted at (new Foo).f or
+          // some other expression that's not a valid AP root.
+          updates.tryAndSet(fieldAccessNode, value);
+        }
       }
     }
 
@@ -655,7 +662,7 @@ public class AccessPathNullnessPropagation
    * the updates
    */
   private void setNonnullIfAnalyzeable(Updates updates, Node node) {
-    AccessPath ap = AccessPath.getAccessPathForNodeWithMapGet(node, state, apContext);
+    AccessPath ap = AccessPath.getAccessPathForNode(node, state, apContext);
     if (ap != null) {
       updates.set(ap, NONNULL);
     }
@@ -666,8 +673,8 @@ public class AccessPathNullnessPropagation
   }
 
   private static boolean hasNonNullConstantValue(LocalVariableNode node) {
-    if (node.getElement() instanceof VariableElement) {
-      VariableElement element = (VariableElement) node.getElement();
+    VariableElement element = node.getElement();
+    if (element != null) {
       return (element.getConstantValue() != null);
     }
     return false;
@@ -685,7 +692,8 @@ public class AccessPathNullnessPropagation
   }
 
   private static boolean isCatchVariable(VariableDeclarationNode node) {
-    return elementFromDeclaration(node.getTree()).getKind() == EXCEPTION_PARAMETER;
+    VariableElement variableElement = elementFromDeclaration(node.getTree());
+    return variableElement != null && variableElement.getKind() == EXCEPTION_PARAMETER;
   }
 
   @Override
@@ -707,10 +715,33 @@ public class AccessPathNullnessPropagation
   public TransferResult<Nullness, NullnessStore> visitFieldAccess(
       FieldAccessNode fieldAccessNode, TransferInput<Nullness, NullnessStore> input) {
     ReadableUpdates updates = new ReadableUpdates();
-    Symbol symbol = ASTHelpers.getSymbol(fieldAccessNode.getTree());
+    Symbol symbol = Preconditions.checkNotNull(ASTHelpers.getSymbol(fieldAccessNode.getTree()));
     setReceiverNonnull(updates, fieldAccessNode.getReceiver(), symbol);
     Nullness nullness = NULLABLE;
-    if (!NullabilityUtil.mayBeNullFieldFromType(symbol, config)) {
+    boolean fieldMayBeNull;
+    switch (handler.onDataflowVisitFieldAccess(
+        fieldAccessNode,
+        symbol,
+        state.getTypes(),
+        state.context,
+        apContext,
+        values(input),
+        updates)) {
+      case HINT_NULLABLE:
+        fieldMayBeNull = true;
+        break;
+      case FORCE_NONNULL:
+        fieldMayBeNull = false;
+        break;
+      case UNKNOWN:
+        fieldMayBeNull =
+            NullabilityUtil.mayBeNullFieldFromType(symbol, config, getCodeAnnotationInfo(state));
+        break;
+      default:
+        // Should be unreachable unless NullnessHint changes, cases above are exhaustive!
+        throw new RuntimeException("Unexpected NullnessHint from handler!");
+    }
+    if (!fieldMayBeNull) {
       nullness = NONNULL;
     } else {
       nullness = input.getRegularStore().valueOfField(fieldAccessNode, nullness, apContext);
@@ -718,9 +749,18 @@ public class AccessPathNullnessPropagation
     return updateRegularStore(nullness, input, updates);
   }
 
+  @Nullable private CodeAnnotationInfo codeAnnotationInfo;
+
+  private CodeAnnotationInfo getCodeAnnotationInfo(VisitorState state) {
+    if (codeAnnotationInfo == null) {
+      codeAnnotationInfo = CodeAnnotationInfo.instance(state.context);
+    }
+    return codeAnnotationInfo;
+  }
+
   private void setReceiverNonnull(
       AccessPathNullnessPropagation.ReadableUpdates updates, Node receiver, Symbol symbol) {
-    if (symbol != null && !symbol.isStatic()) {
+    if ((symbol != null) && !isStatic(symbol)) {
       setNonnullIfAnalyzeable(updates, receiver);
     }
   }
@@ -841,8 +881,8 @@ public class AccessPathNullnessPropagation
     }
 
     AccessPath accessPath =
-        AccessPath.getAccessPathForNodeNoMapGet(
-            ((NotEqualNode) condition).getLeftOperand(), apContext);
+        AccessPath.getAccessPathForNode(
+            ((NotEqualNode) condition).getLeftOperand(), state, apContext);
 
     if (accessPath == null) {
       return noStoreChanges(NULLABLE, input);
@@ -873,22 +913,16 @@ public class AccessPathNullnessPropagation
     ReadableUpdates elseUpdates = new ReadableUpdates();
     ReadableUpdates bothUpdates = new ReadableUpdates();
     Symbol.MethodSymbol callee = ASTHelpers.getSymbol(node.getTree());
-    Preconditions.checkNotNull(callee);
+    Preconditions.checkNotNull(
+        callee); // this could be null before https://github.com/google/error-prone/pull/2902
     setReceiverNonnull(bothUpdates, node.getTarget().getReceiver(), callee);
     setNullnessForMapCalls(
         node, callee, node.getArguments(), values(input), thenUpdates, bothUpdates);
     NullnessHint nullnessHint =
         handler.onDataflowVisitMethodInvocation(
-            node,
-            state.getTypes(),
-            state.context,
-            apContext,
-            values(input),
-            thenUpdates,
-            elseUpdates,
-            bothUpdates);
+            node, callee, state, apContext, values(input), thenUpdates, elseUpdates, bothUpdates);
     Nullness nullness = returnValueNullness(node, input, nullnessHint);
-    if (booleanReturnType(node)) {
+    if (booleanReturnType(callee)) {
       ResultingStore thenStore = updateStore(input.getThenStore(), thenUpdates, bothUpdates);
       ResultingStore elseStore = updateStore(input.getElseStore(), elseUpdates, bothUpdates);
       return conditionalResult(
@@ -906,7 +940,7 @@ public class AccessPathNullnessPropagation
       AccessPathNullnessPropagation.Updates bothUpdates) {
     if (AccessPath.isContainsKey(callee, state)) {
       // make sure argument is a variable, and get its element
-      AccessPath getAccessPath = AccessPath.getForMapInvocation(node, apContext);
+      AccessPath getAccessPath = AccessPath.getForMapInvocation(node, state, apContext);
       if (getAccessPath != null) {
         // in the then branch, we want the get() call with the same argument to be non-null
         // we assume that the declared target of the get() method will be in the same class
@@ -914,17 +948,41 @@ public class AccessPathNullnessPropagation
         thenUpdates.set(getAccessPath, NONNULL);
       }
     } else if (AccessPath.isMapPut(callee, state)) {
-      AccessPath getAccessPath = AccessPath.getForMapInvocation(node, apContext);
+      AccessPath getAccessPath = AccessPath.getForMapInvocation(node, state, apContext);
       if (getAccessPath != null) {
         Nullness value = inputs.valueOfSubNode(arguments.get(1));
         bothUpdates.set(getAccessPath, value);
       }
+    } else if (AccessPath.isMapComputeIfAbsent(callee, state)) {
+      AccessPath getAccessPath = AccessPath.getForMapInvocation(node, state, apContext);
+      if (getAccessPath != null) {
+        // TODO: For now, Function<K, V> implies a @NonNull V. We need to revisit this once we
+        // support generics, but we do include a couple defensive tests below.
+        if (arguments.size() < 2) {
+          return;
+        }
+        Node funcNode = arguments.get(1);
+        if (!funcNode.getType().getKind().equals(TypeKind.DECLARED)) {
+          return;
+        }
+        Type.ClassType classType = (Type.ClassType) funcNode.getType();
+        if (classType.getTypeArguments().size() != 2) {
+          return;
+        }
+        Type functionReturnType = classType.getTypeArguments().get(1);
+        // Unfortunately, functionReturnType.tsym seems to elide annotation info, so we can't call
+        // the Nullness.* methods that deal with Symbol. We might have better APIs for this kind of
+        // check once we have real generics support.
+        if (!Nullness.hasNullableAnnotation(
+            functionReturnType.getAnnotationMirrors().stream(), config)) {
+          bothUpdates.set(getAccessPath, NONNULL);
+        }
+      }
     }
   }
 
-  private boolean booleanReturnType(MethodInvocationNode node) {
-    Symbol.MethodSymbol methodSymbol = ASTHelpers.getSymbol(node.getTree());
-    return methodSymbol != null && methodSymbol.getReturnType().getTag() == TypeTag.BOOLEAN;
+  private static boolean booleanReturnType(Symbol.MethodSymbol methodSymbol) {
+    return methodSymbol.getReturnType().getTag() == TypeTag.BOOLEAN;
   }
 
   Nullness returnValueNullness(
@@ -946,7 +1004,8 @@ public class AccessPathNullnessPropagation
       nullness = input.getRegularStore().valueOfMethodCall(node, state, NULLABLE, apContext);
     } else if (node == null
         || methodReturnsNonNull.test(node)
-        || !Nullness.hasNullableAnnotation((Symbol) node.getTarget().getMethod(), config)) {
+        || (!Nullness.hasNullableAnnotation((Symbol) node.getTarget().getMethod(), config)
+            && !genericReturnIsNullable(node))) {
       // definite non-null return
       nullness = NONNULL;
     } else {
@@ -954,6 +1013,27 @@ public class AccessPathNullnessPropagation
       nullness = input.getRegularStore().valueOfMethodCall(node, state, NULLABLE, apContext);
     }
     return nullness;
+  }
+
+  /**
+   * Computes the nullability of a generic return type in the context of some receiver type at an
+   * invocation.
+   *
+   * @param node the invocation node
+   * @return nullability of the return type in the context of the type of the receiver argument at
+   *     {@code node}
+   */
+  private boolean genericReturnIsNullable(MethodInvocationNode node) {
+    if (node != null && config.isJSpecifyMode()) {
+      MethodInvocationTree tree = node.getTree();
+      if (tree != null) {
+        Nullness nullness =
+            GenericsChecks.getGenericReturnNullnessAtInvocation(
+                ASTHelpers.getSymbol(tree), tree, state, config);
+        return nullness.equals(NULLABLE);
+      }
+    }
+    return false;
   }
 
   @Override
@@ -996,6 +1076,20 @@ public class AccessPathNullnessPropagation
   @Override
   public TransferResult<Nullness, NullnessStore> visitClassDeclaration(
       ClassDeclarationNode classDeclarationNode, TransferInput<Nullness, NullnessStore> input) {
+    return noStoreChanges(NULLABLE, input);
+  }
+
+  @Override
+  public TransferResult<Nullness, NullnessStore> visitExpressionStatement(
+      ExpressionStatementNode expressionStatementNode,
+      TransferInput<Nullness, NullnessStore> input) {
+    return noStoreChanges(NULLABLE, input);
+  }
+
+  @Override
+  public TransferResult<Nullness, NullnessStore> visitDeconstructorPattern(
+      DeconstructorPatternNode deconstructorPatternNode,
+      TransferInput<Nullness, NullnessStore> input) {
     return noStoreChanges(NULLABLE, input);
   }
 
@@ -1062,6 +1156,9 @@ public class AccessPathNullnessPropagation
 
     void set(FieldAccessNode node, Nullness value);
 
+    /** Like set, but ignore if node does not produce a valid access path */
+    void tryAndSet(FieldAccessNode node, Nullness value);
+
     void set(MethodInvocationNode node, Nullness value);
 
     void set(AccessPath ap, Nullness value);
@@ -1072,18 +1169,27 @@ public class AccessPathNullnessPropagation
 
     @Override
     public void set(LocalVariableNode node, Nullness value) {
-      values.put(AccessPath.fromLocal(node), checkNotNull(value));
+      values.put(AccessPath.fromLocal(node), value);
     }
 
     @Override
     public void set(VariableDeclarationNode node, Nullness value) {
-      values.put(AccessPath.fromVarDecl(node), checkNotNull(value));
+      values.put(AccessPath.fromVarDecl(node), value);
     }
 
     @Override
     public void set(FieldAccessNode node, Nullness value) {
       AccessPath accessPath = AccessPath.fromFieldAccess(node, apContext);
-      values.put(Preconditions.checkNotNull(accessPath), checkNotNull(value));
+      values.put(checkNotNull(accessPath), value);
+    }
+
+    @Override
+    public void tryAndSet(FieldAccessNode node, Nullness value) {
+      AccessPath accessPath = AccessPath.fromFieldAccess(node, apContext);
+      if (accessPath == null) {
+        return;
+      }
+      values.put(accessPath, value);
     }
 
     @Override
