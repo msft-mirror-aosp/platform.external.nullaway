@@ -15,13 +15,10 @@
  */
 
 plugins {
-  id "java-library"
+    id "java-library"
 }
 
 evaluationDependsOn(":jar-infer:jar-infer-cli")
-
-sourceCompatibility = "1.8"
-targetCompatibility = "1.8"
 
 def astubxPath = "com/uber/nullaway/jarinfer/provider/jarinfer.astubx"
 
@@ -31,15 +28,20 @@ jar {
                 'Created-By'     : "Gradle ${gradle.gradleVersion}",
                 'Build-Jdk'      : "${System.properties['java.version']} (${System.properties['java.vendor']} ${System.properties['java.vm.version']})",
                 'Build-OS'       : "${System.properties['os.name']} ${System.properties['os.arch']} ${System.properties['os.version']}"
-        )
+                )
     }
 }
 
 jar.doLast {
     javaexec {
-        classpath = files("${rootProject.projectDir}/jar-infer/jar-infer-cli/build/libs/jar-infer-cli-${VERSION_NAME}.jar")
+        classpath = files("${rootProject.projectDir}/jar-infer/jar-infer-cli/build/libs/jar-infer-cli.jar")
         main = "com.uber.nullaway.jarinfer.JarInfer"
-        args = ["-i", jar.archivePath, "-o", "${jar.destinationDir}/${astubxPath}"]
+        args = [
+            "-i",
+            jar.archiveFile.get(),
+            "-o",
+            "${jar.destinationDirectory.get()}/${astubxPath}"
+        ]
     }
     exec {
         workingDir "./build/libs"

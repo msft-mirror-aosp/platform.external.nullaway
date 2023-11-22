@@ -50,6 +50,7 @@ public class NullnessStore implements Store<NullnessStore> {
   private NullnessStore(Map<AccessPath, Nullness> contents) {
     this.contents = ImmutableMap.copyOf(contents);
   }
+
   /**
    * Produce an empty store.
    *
@@ -67,8 +68,7 @@ public class NullnessStore implements Store<NullnessStore> {
    * @return fact associated with local
    */
   public Nullness valueOfLocalVariable(LocalVariableNode node, Nullness defaultValue) {
-    Nullness result = contents.get(AccessPath.fromLocal(node));
-    return result != null ? result : defaultValue;
+    return contents.getOrDefault(AccessPath.fromLocal(node), defaultValue);
   }
 
   /**
@@ -84,8 +84,7 @@ public class NullnessStore implements Store<NullnessStore> {
     if (path == null) {
       return defaultValue;
     }
-    Nullness result = contents.get(path);
-    return result != null ? result : defaultValue;
+    return contents.getOrDefault(path, defaultValue);
   }
 
   /**
@@ -104,8 +103,7 @@ public class NullnessStore implements Store<NullnessStore> {
     if (accessPath == null) {
       return defaultValue;
     }
-    Nullness result = contents.get(accessPath);
-    return result != null ? result : defaultValue;
+    return contents.getOrDefault(accessPath, defaultValue);
   }
 
   /**
@@ -142,6 +140,7 @@ public class NullnessStore implements Store<NullnessStore> {
     }
     return null;
   }
+
   /**
    * Gets the {@link Nullness} value of an access path.
    *
@@ -152,8 +151,7 @@ public class NullnessStore implements Store<NullnessStore> {
     if (contents == null) {
       return Nullness.NULLABLE;
     }
-    Nullness nullness = contents.get(accessPath);
-    return (nullness == null) ? Nullness.NULLABLE : nullness;
+    return contents.getOrDefault(accessPath, Nullness.NULLABLE);
   }
 
   public Builder toBuilder() {
@@ -188,7 +186,7 @@ public class NullnessStore implements Store<NullnessStore> {
   }
 
   @Override
-  public boolean equals(Object o) {
+  public boolean equals(@Nullable Object o) {
     if (!(o instanceof NullnessStore)) {
       return false;
     }
@@ -235,15 +233,15 @@ public class NullnessStore implements Store<NullnessStore> {
       Map<LocalVariableNode, LocalVariableNode> localVarTranslations) {
     NullnessStore.Builder nullnessBuilder = NullnessStore.empty().toBuilder();
     for (AccessPath ap : contents.keySet()) {
-      if (ap.getRoot().isReceiver()) {
+      Element element = ap.getRoot();
+      if (element == null) {
+        // Access path is rooted at the receiver, so we don't need to uproot it
         continue;
       }
-      Element varElement = ap.getRoot().getVarElement();
       for (LocalVariableNode fromVar : localVarTranslations.keySet()) {
-        if (varElement.equals(fromVar.getElement())) {
+        if (element.equals(fromVar.getElement())) {
           LocalVariableNode toVar = localVarTranslations.get(fromVar);
-          AccessPath newAP =
-              new AccessPath(new AccessPath.Root(toVar.getElement()), ap.getElements());
+          AccessPath newAP = AccessPath.switchRoot(ap, toVar.getElement());
           nullnessBuilder.setInformation(newAP, contents.get(ap));
         }
       }
@@ -259,9 +257,7 @@ public class NullnessStore implements Store<NullnessStore> {
    */
   public NullnessStore filterAccessPaths(Predicate<AccessPath> pred) {
     return new NullnessStore(
-        contents
-            .entrySet()
-            .stream()
+        contents.entrySet().stream()
             .filter(e -> pred.test(e.getKey()))
             .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue)));
   }

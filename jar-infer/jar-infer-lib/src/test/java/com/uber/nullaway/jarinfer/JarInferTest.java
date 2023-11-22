@@ -57,14 +57,15 @@ public class JarInferTest {
 
   private CompilationTestHelper compilationTestHelper;
 
-  @BugPattern(
-      name = "DummyChecker",
-      summary = "Dummy checker to use CompilationTestHelper",
-      severity = WARNING)
   /**
    * A dummy checker to allow us to use {@link CompilationTestHelper} to compile Java code for
    * testing, as it requires a {@link BugChecker} to run.
    */
+  @BugPattern(
+      name = "DummyChecker",
+      summary = "Dummy checker to use CompilationTestHelper",
+      severity = WARNING)
+  @SuppressWarnings("BugPatternNaming") // remove once we require EP 2.11+
   public static class DummyChecker extends BugChecker {
     public DummyChecker() {}
   }
@@ -169,7 +170,7 @@ public class JarInferTest {
    * @param result Map of 'method signatures' to their 'inferred list of NonNull parameters'.
    * @param expected Map of 'method signatures' to their 'expected list of NonNull parameters'.
    */
-  private boolean verify(Map<String, Set<Integer>> result, HashMap<String, Set<Integer>> expected) {
+  private boolean verify(Map<String, Set<Integer>> result, Map<String, Set<Integer>> expected) {
     for (Map.Entry<String, Set<Integer>> entry : result.entrySet()) {
       String mtd_sign = entry.getKey();
       Set<Integer> ddParams = entry.getValue();
@@ -435,6 +436,10 @@ public class JarInferTest {
 
   @Test
   public void toyAARAnnotatingClasses() throws Exception {
+    if (System.getProperty("java.version").startsWith("1.8")) {
+      // We only build the sample Android apps on JDK 11+
+      return;
+    }
     testAnnotationInAarTemplate(
         "toyAARAnnotatingClasses",
         "com.uber.nullaway.jarinfer.toys.unannotated",

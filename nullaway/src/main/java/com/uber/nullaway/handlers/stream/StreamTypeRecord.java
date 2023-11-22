@@ -1,4 +1,5 @@
 package com.uber.nullaway.handlers.stream;
+
 /*
  * Copyright (c) 2017 Uber Technologies, Inc.
  *
@@ -20,6 +21,8 @@ package com.uber.nullaway.handlers.stream;
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+import static com.uber.nullaway.NullabilityUtil.castToNonNull;
+
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.VisitorState;
@@ -86,7 +89,9 @@ public class StreamTypeRecord {
   public MaplikeMethodRecord getMaplikeMethodRecord(Symbol.MethodSymbol methodSymbol) {
     MaplikeMethodRecord record = mapMethodSigToRecord.get(methodSymbol.toString());
     if (record == null) {
-      record = mapMethodSimpleNameToRecord.get(methodSymbol.getQualifiedName().toString());
+      record =
+          castToNonNull(
+              mapMethodSimpleNameToRecord.get(methodSymbol.getQualifiedName().toString()));
     }
     return record;
   }

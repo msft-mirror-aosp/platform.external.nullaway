@@ -1,6 +1,5 @@
 package com.uber.nullaway;
 
-import com.uber.nullaway.testlibrarymodels.TestLibraryModels;
 import java.util.Arrays;
 import org.junit.Test;
 
@@ -294,41 +293,138 @@ public class NullAwayAcknowledgeRestrictiveAnnotationsTests extends NullAwayTest
   }
 
   @Test
-  public void libraryModelsOverrideRestrictiveAnnotations() {
+  public void annotatedVsUnannotatedMethodRefOverrideChecks() {
     makeTestHelperWithArgs(
             Arrays.asList(
-                "-processorpath",
-                TestLibraryModels.class
-                    .getProtectionDomain()
-                    .getCodeSource()
-                    .getLocation()
-                    .getPath(),
                 "-d",
                 temporaryFolder.getRoot().getAbsolutePath(),
                 "-XepOpt:NullAway:AnnotatedPackages=com.uber",
-                "-XepOpt:NullAway:UnannotatedSubPackages=com.uber.lib.unannotated",
-                "-XepOpt:NullAway:AcknowledgeRestrictiveAnnotations=true"))
+                "-XepOpt:NullAway:UnannotatedSubPackages=com.uber.nullaway.[a-zA-Z0-9.]+.unannotated",
+                // Note: this is the OFF case.
+                "-XepOpt:NullAway:AcknowledgeRestrictiveAnnotations=false"))
+        .addSourceLines(
+            "AnnotatedStringIDFunctions.java",
+            "package com.uber;",
+            "import javax.annotation.Nullable;",
+            "class AnnotatedStringIDFunctions {",
+            "    public static String idRetNonNull(String s) {",
+            "        return s;",
+            "    }",
+            "    @Nullable",
+            "    public static String idRetNullable(String s) {",
+            "        return s;",
+            "    }",
+            "}")
+        .addSourceLines(
+            "UnannotatedStringIDFunctions.java",
+            "package com.uber.nullaway.lib.unannotated;",
+            "import javax.annotation.Nullable;",
+            "public class UnannotatedStringIDFunctions {",
+            "    public static String idRetNonNull(String s) {",
+            "        return s;",
+            "    }",
+            "    @Nullable",
+            "    public static String idRetNullable(String s) {",
+            "        return s;",
+            "    }",
+            "}")
         .addSourceLines(
             "Test.java",
             "package com.uber;",
-            "import com.uber.lib.unannotated.RestrictivelyAnnotatedFIWithModelOverride;",
+            "import com.google.common.base.Function;", // is Function<String, String!> from model
+            "import com.google.common.collect.Maps;",
+            "import com.uber.nullaway.lib.unannotated.UnannotatedStringIDFunctions;",
+            "import java.util.List;",
+            "import java.util.Map;",
             "import javax.annotation.Nullable;",
-            "public class Test {",
-            "  void bar(RestrictivelyAnnotatedFIWithModelOverride f) {",
-            "     // Param is @NullableDecl in bytecode, overridden by library model",
-            "     // BUG: Diagnostic contains: passing @Nullable parameter 'null' where @NonNull",
-            "     f.apply(null);",
-            "  }",
-            "  void foo() {",
-            "    RestrictivelyAnnotatedFIWithModelOverride func = (x) -> {",
-            "     // Param is @NullableDecl in bytecode, overridden by library model, thus safe",
-            "     return x.toString();",
-            "    };",
-            "  }",
-            "  void baz() {",
-            "     // Safe to pass, since Function can't have a null instance parameter",
-            "     bar(Object::toString);",
-            "  }",
+            "class Test {",
+            "    public static Map<String, String> testFunctionOverrideMethodRef1(List<String> keys) {",
+            "        return Maps.toMap(keys,",
+            "                /* is Function<String, String!> */ AnnotatedStringIDFunctions::idRetNonNull);",
+            "    }",
+            "    public static Map<String, String> testFunctionOverrideMethodRef2(List<String> keys) {",
+            "        return Maps.toMap(keys,",
+            "                // BUG: Diagnostic contains: method returns @Nullable, but functional interface",
+            "                /* is Function<String, String?> */ AnnotatedStringIDFunctions::idRetNullable);",
+            "    }",
+            "    public static Map<String, String> testFunctionOverrideMethodRef3(List<String> keys) {",
+            "        return Maps.toMap(keys,",
+            "                /* is Function<String, String!> */ UnannotatedStringIDFunctions::idRetNonNull);",
+            "    }",
+            "    public static Map<String, String> testFunctionOverrideMethodRef4(List<String> keys) {",
+            "        // No report, since idRetNullable() is unannotated and restrictive annotations are off",
+            "        return Maps.toMap(keys,",
+            "                /* is Function<String, String?> */ UnannotatedStringIDFunctions::idRetNullable);",
+            "    }",
+            "}")
+        .doTest();
+  }
+
+  @Test
+  public void annotatedVsUnannotatedMethodRefOverrideWithRestrictiveAnnotations() {
+    makeTestHelperWithArgs(
+            Arrays.asList(
+                "-d",
+                temporaryFolder.getRoot().getAbsolutePath(),
+                "-XepOpt:NullAway:AnnotatedPackages=com.uber",
+                "-XepOpt:NullAway:UnannotatedSubPackages=com.uber.nullaway.[a-zA-Z0-9.]+.unannotated",
+                "-XepOpt:NullAway:AcknowledgeRestrictiveAnnotations=true"))
+        .addSourceLines(
+            "AnnotatedStringIDFunctions.java",
+            "package com.uber;",
+            "import javax.annotation.Nullable;",
+            "class AnnotatedStringIDFunctions {",
+            "    public static String idRetNonNull(String s) {",
+            "        return s;",
+            "    }",
+            "    @Nullable",
+            "    public static String idRetNullable(String s) {",
+            "        return s;",
+            "    }",
+            "}")
+        .addSourceLines(
+            "UnannotatedStringIDFunctions.java",
+            "package com.uber.nullaway.lib.unannotated;",
+            "import javax.annotation.Nullable;",
+            "public class UnannotatedStringIDFunctions {",
+            "    public static String idRetNonNull(String s) {",
+            "        return s;",
+            "    }",
+            "    @Nullable",
+            "    public static String idRetNullable(String s) {",
+            "        return s;",
+            "    }",
+            "}")
+        .addSourceLines(
+            "Test.java",
+            "package com.uber;",
+            "import com.google.common.base.Function;", // is Function<String, String!> from model
+            "import com.google.common.collect.Maps;",
+            "import com.uber.nullaway.lib.unannotated.UnannotatedStringIDFunctions;",
+            "import java.util.List;",
+            "import java.util.Map;",
+            "import javax.annotation.Nullable;",
+            "class Test {",
+            "    public static Map<String, String> testFunctionOverrideMethodRef1(List<String> keys) {",
+            "        return Maps.toMap(keys,",
+            "                /* is Function<String, String!> */ AnnotatedStringIDFunctions::idRetNonNull);",
+            "    }",
+            "    public static Map<String, String> testFunctionOverrideMethodRef2(List<String> keys) {",
+            "        return Maps.toMap(keys,",
+            "                // BUG: Diagnostic contains: method returns @Nullable, but functional interface",
+            "                /* is Function<String, String?> */ AnnotatedStringIDFunctions::idRetNullable);",
+            "    }",
+            "    public static Map<String, String> testFunctionOverrideMethodRef3(List<String> keys) {",
+            "        return Maps.toMap(keys,",
+            "                /* is Function<String, String!> */ UnannotatedStringIDFunctions::idRetNonNull);",
+            "    }",
+            "    public static Map<String, String> testFunctionOverrideMethodRef4(List<String> keys) {",
+            "        // Note: doesn't matter that the method ref is unannotated, since restrictive annotations",
+            "        // are on.",
+            "        return Maps.toMap(keys,",
+            "                // BUG: Diagnostic contains: method returns @Nullable, but functional interface",
+            "                /* is Function<String, String?> */ UnannotatedStringIDFunctions::idRetNullable);",
+            "    }",
             "}")
         .doTest();
   }
