@@ -292,6 +292,26 @@ public class NullAwayJSpecifyGenericsTests extends NullAwayTestsBase {
   }
 
   @Test
+  public void genericsChecksForAssignmentsWithNonJSpecifyAnnotations() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            "package com.uber;",
+            "import org.checkerframework.checker.nullness.qual.Nullable;",
+            "class Test {",
+            "  static class NullableTypeParam<E extends @Nullable Object> {}",
+            "  static void testNoWarningForMismatch(NullableTypeParam<@Nullable String> t1) {",
+            "    // no error here since we only do our checks for JSpecify @Nullable annotations",
+            "    NullableTypeParam<String> t2 = t1;",
+            "  }",
+            "  static void testNegative(NullableTypeParam<@Nullable String> t1) {",
+            "    NullableTypeParam<@Nullable String> t2 = t1;",
+            "  }",
+            "}")
+        .doTest();
+  }
+
+  @Test
   public void nestedChecksForAssignmentsMultipleArguments() {
     makeHelper()
         .addSourceLines(
@@ -1001,6 +1021,23 @@ public class NullAwayJSpecifyGenericsTests extends NullAwayTestsBase {
   }
 
   @Test
+  public void nestedGenericTypeAssignment2() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            "package com.uber;",
+            "import org.jspecify.annotations.Nullable;",
+            "class Test {",
+            "  static class A<T extends @Nullable Object> { }",
+            "  static void testPositive() {",
+            "    // BUG: Diagnostic contains: Cannot assign from type",
+            "    A<A<String>[]> var2 = new A<A<@Nullable String>[]>();",
+            "  }",
+            "}")
+        .doTest();
+  }
+
+  @Test
   public void genericPrimitiveArrayTypeAssignment() {
     makeHelper()
         .addSourceLines(
@@ -1489,6 +1526,115 @@ public class NullAwayJSpecifyGenericsTests extends NullAwayTestsBase {
             "    Fn2<@Nullable String, @Nullable String> fn2 = new TestFunc2();",
             "    // No error due to @Contract",
             "    fn2.apply(\"hello\").hashCode();",
+            "  }",
+            "}")
+        .doTest();
+  }
+
+  @Test
+  public void testForStaticMethodCallAsAParam() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            "package com.uber;",
+            "import org.jspecify.annotations.Nullable;",
+            "class Test {",
+            "  static class A<T> {",
+            "   public static <T> A<T> returnA(){",
+            "     return new A<T>();",
+            "   }",
+            "   public static <T> A<T> returnAWithParam(Object o){",
+            "     return new A<T>();",
+            "   }",
+            "  }",
+            "  static void func(A<Object> a){",
+            "  }",
+            "  static void testNegative() {",
+            "   func(A.returnA());",
+            "  }",
+            "  static void testNegative2() {",
+            "   func(A.returnAWithParam(new Object()));",
+            "  }",
+            "}")
+        .doTest();
+  }
+
+  @Test
+  public void testForDiamondOperatorReturnedAsAMethodCaller() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            "package com.uber;",
+            "import org.jspecify.annotations.Nullable;",
+            "class Test {",
+            "  static class B<T>{",
+            "   String build(){return \"x\";}",
+            "  }",
+            "  static String testNegative() {",
+            "   return new B<>().build();",
+            "  }",
+            "}")
+        .doTest();
+  }
+
+  @Test
+  public void testForNullRhsTypeWhenReturnedForGenericType() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            "package com.uber;",
+            "import org.jspecify.annotations.Nullable;",
+            "class Test {",
+            "  static class A<T extends @Nullable Object> { }",
+            "  static A<String> testPositive() {",
+            "   // BUG: Diagnostic contains: returning @Nullable expression from method with @NonNull return type",
+            "   return null;",
+            "  }",
+            "  static @Nullable A<String> testNegative() {",
+            "   return null;",
+            "  }",
+            "}")
+        .doTest();
+  }
+
+  @Test
+  public void testForNullTypeRhsTypeForArrayType() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            "package com.uber;",
+            "import org.jspecify.annotations.Nullable;",
+            "import java.util.List;",
+            "import java.util.ArrayList;",
+            "class Test {",
+            "  static void testNegative() {",
+            "   List<String> a = new ArrayList<String>();",
+            "   Object[] o = a != null ? a.toArray() : null;",
+            "  }",
+            "}")
+        .doTest();
+  }
+
+  @Test
+  public void overrideWithRawType() {
+    makeHelper()
+        .addSourceLines(
+            "Test.java",
+            "package com.uber;",
+            "import org.jspecify.annotations.Nullable;",
+            "class Test {",
+            "  interface Foo<T> {}",
+            "  interface Bar<T> {",
+            "    void add(Foo<T> foo);",
+            "    @Nullable Foo<T> get();",
+            "  }",
+            "  static class Baz<T> implements Bar<T> {",
+            "    @SuppressWarnings(\"rawtypes\")",
+            "    @Override",
+            "    public void add(Foo foo) {}",
+            "    @SuppressWarnings(\"rawtypes\")",
+            "    @Override",
+            "    public @Nullable Foo get() { return null; }",
             "  }",
             "}")
         .doTest();

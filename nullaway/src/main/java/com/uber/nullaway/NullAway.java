@@ -28,6 +28,7 @@ import static com.sun.source.tree.Tree.Kind.IDENTIFIER;
 import static com.sun.source.tree.Tree.Kind.OTHER;
 import static com.sun.source.tree.Tree.Kind.PARENTHESIZED;
 import static com.sun.source.tree.Tree.Kind.TYPE_CAST;
+import static com.uber.nullaway.ASTHelpersBackports.hasDirectAnnotationWithSimpleName;
 import static com.uber.nullaway.ASTHelpersBackports.isStatic;
 import static com.uber.nullaway.ErrorBuilder.errMsgForInitializer;
 import static com.uber.nullaway.NullabilityUtil.castToNonNull;
@@ -35,6 +36,7 @@ import static com.uber.nullaway.NullabilityUtil.castToNonNull;
 import com.google.auto.service.AutoService;
 import com.google.auto.value.AutoValue;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Verify;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
@@ -92,6 +94,7 @@ import com.sun.tools.javac.tree.JCTree;
 import com.uber.nullaway.ErrorMessage.MessageTypes;
 import com.uber.nullaway.dataflow.AccessPathNullnessAnalysis;
 import com.uber.nullaway.dataflow.EnclosingEnvironmentNullness;
+import com.uber.nullaway.generics.GenericsChecks;
 import com.uber.nullaway.handlers.Handler;
 import com.uber.nullaway.handlers.Handlers;
 import java.util.ArrayList;
@@ -397,14 +400,29 @@ public class NullAway extends BugChecker
     if (!withinAnnotatedCode(state)) {
       return Description.NO_MATCH;
     }
-    final Symbol.MethodSymbol methodSymbol = ASTHelpers.getSymbol(tree);
-    if (methodSymbol == null) {
-      throw new RuntimeException("not expecting unresolved method here");
-    }
+    Symbol.MethodSymbol methodSymbol = getSymbolForMethodInvocation(tree, state);
     handler.onMatchMethodInvocation(this, tree, state, methodSymbol);
     // assuming this list does not include the receiver
     List<? extends ExpressionTree> actualParams = tree.getArguments();
     return handleInvocation(tree, state, methodSymbol, actualParams);
+  }
+
+  private static Symbol.MethodSymbol getSymbolForMethodInvocation(
+      MethodInvocationTree tree, VisitorState state) {
+    Symbol.MethodSymbol methodSymbol = ASTHelpers.getSymbol(tree);
+    Verify.verify(methodSymbol != null, "not expecting unresolved method here");
+    // For interface methods, if the method is an implicit method corresponding to a method from
+    // java.lang.Object, use the symbol for the java.lang.Object method instead.  We do this to
+    // properly treat the method as unannotated, which is particularly important for equals()
+    // methods.  This is an adaptation to a change in JDK 18; see
+    // https://bugs.openjdk.org/browse/JDK-8272564
+    if (methodSymbol.owner.isInterface()) {
+      Symbol.MethodSymbol baseSymbol = (Symbol.MethodSymbol) methodSymbol.baseSymbol();
+      if (baseSymbol != methodSymbol && baseSymbol.owner == state.getSymtab().objectType.tsym) {
+        methodSymbol = baseSymbol;
+      }
+    }
+    return methodSymbol;
   }
 
   @Override
@@ -475,7 +493,7 @@ public class NullAway extends BugChecker
       doUnboxingCheck(state, tree.getExpression());
     }
     // generics check
-    if (lhsType != null && lhsType.getTypeArguments().length() > 0) {
+    if (lhsType != null && lhsType.getTypeArguments().length() > 0 && config.isJSpecifyMode()) {
       GenericsChecks.checkTypeParameterNullnessForAssignability(tree, this, state);
     }
 
@@ -485,7 +503,8 @@ public class NullAway extends BugChecker
       return Description.NO_MATCH;
     }
 
-    if (Nullness.hasNullableAnnotation(assigned, config)) {
+    if (Nullness.hasNullableAnnotation(assigned, config)
+        || handler.onOverrideFieldNullability(assigned)) {
       // field already annotated
       return Description.NO_MATCH;
     }
@@ -576,20 +595,20 @@ public class NullAway extends BugChecker
     Symbol.MethodSymbol methodSymbol = ASTHelpers.getSymbol(tree);
     switch (nullMarkingForTopLevelClass) {
       case FULLY_MARKED:
-        if (ASTHelpers.hasDirectAnnotationWithSimpleName(
+        if (hasDirectAnnotationWithSimpleName(
             methodSymbol, NullabilityUtil.NULLUNMARKED_SIMPLE_NAME)) {
           nullMarkingForTopLevelClass = NullMarking.PARTIALLY_MARKED;
         }
         break;
       case FULLY_UNMARKED:
-        if (ASTHelpers.hasDirectAnnotationWithSimpleName(
+        if (hasDirectAnnotationWithSimpleName(
             methodSymbol, NullabilityUtil.NULLMARKED_SIMPLE_NAME)) {
           nullMarkingForTopLevelClass = NullMarking.PARTIALLY_MARKED;
           markedMethodInUnmarkedContext = true;
         }
         break;
       case PARTIALLY_MARKED:
-        if (ASTHelpers.hasDirectAnnotationWithSimpleName(
+        if (hasDirectAnnotationWithSimpleName(
             methodSymbol, NullabilityUtil.NULLMARKED_SIMPLE_NAME)) {
           // We still care here if this is a transition between @NullUnmarked and @NullMarked code,
           // within partially marked code, see checks below for markedMethodInUnmarkedContext.
@@ -693,7 +712,9 @@ public class NullAway extends BugChecker
     if (!withinAnnotatedCode(state)) {
       return Description.NO_MATCH;
     }
-    GenericsChecks.checkInstantiationForParameterizedTypedTree(tree, state, this, config);
+    if (config.isJSpecifyMode()) {
+      GenericsChecks.checkInstantiationForParameterizedTypedTree(tree, state, this, config);
+    }
     return Description.NO_MATCH;
   }
 
@@ -1422,7 +1443,7 @@ public class NullAway extends BugChecker
       return Description.NO_MATCH;
     }
     VarSymbol symbol = ASTHelpers.getSymbol(tree);
-    if (tree.getInitializer() != null) {
+    if (tree.getInitializer() != null && config.isJSpecifyMode()) {
       GenericsChecks.checkTypeParameterNullnessForAssignability(tree, this, state);
     }
 
@@ -1463,10 +1484,10 @@ public class NullAway extends BugChecker
    */
   private boolean classAnnotationIntroducesPartialMarking(Symbol.ClassSymbol classSymbol) {
     return (nullMarkingForTopLevelClass == NullMarking.FULLY_UNMARKED
-            && ASTHelpers.hasDirectAnnotationWithSimpleName(
+            && hasDirectAnnotationWithSimpleName(
                 classSymbol, NullabilityUtil.NULLMARKED_SIMPLE_NAME))
         || (nullMarkingForTopLevelClass == NullMarking.FULLY_MARKED
-            && ASTHelpers.hasDirectAnnotationWithSimpleName(
+            && hasDirectAnnotationWithSimpleName(
                 classSymbol, NullabilityUtil.NULLUNMARKED_SIMPLE_NAME));
   }
 
@@ -1575,7 +1596,9 @@ public class NullAway extends BugChecker
   public Description matchConditionalExpression(
       ConditionalExpressionTree tree, VisitorState state) {
     if (withinAnnotatedCode(state)) {
-      GenericsChecks.checkTypeParameterNullnessForConditionalExpression(tree, this, state);
+      if (config.isJSpecifyMode()) {
+        GenericsChecks.checkTypeParameterNullnessForConditionalExpression(tree, this, state);
+      }
       doUnboxingCheck(state, tree.getCondition());
     }
     return Description.NO_MATCH;
@@ -1706,8 +1729,10 @@ public class NullAway extends BugChecker
                       : Nullness.NONNULL);
         }
       }
-      GenericsChecks.compareGenericTypeParameterNullabilityForCall(
-          formalParams, actualParams, methodSymbol.isVarArgs(), this, state);
+      if (config.isJSpecifyMode()) {
+        GenericsChecks.compareGenericTypeParameterNullabilityForCall(
+            formalParams, actualParams, methodSymbol.isVarArgs(), this, state);
+      }
     }
 
     // Allow handlers to override the list of non-null argument positions
@@ -2232,7 +2257,7 @@ public class NullAway extends BugChecker
   }
 
   private boolean isInitializerMethod(VisitorState state, Symbol.MethodSymbol symbol) {
-    if (ASTHelpers.hasDirectAnnotationWithSimpleName(symbol, "Initializer")
+    if (hasDirectAnnotationWithSimpleName(symbol, "Initializer")
         || config.isKnownInitializerMethod(symbol)) {
       return true;
     }
