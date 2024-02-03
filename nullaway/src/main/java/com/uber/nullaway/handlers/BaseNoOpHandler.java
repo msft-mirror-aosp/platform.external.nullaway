@@ -119,6 +119,12 @@ public abstract class BaseNoOpHandler implements Handler {
   }
 
   @Override
+  public boolean onOverrideFieldNullability(Symbol field) {
+    // NoOp
+    return false;
+  }
+
+  @Override
   public Nullness[] onOverrideMethodInvocationParametersNullability(
       Context context,
       Symbol.MethodSymbol methodSymbol,
