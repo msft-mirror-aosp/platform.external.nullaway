@@ -18,6 +18,8 @@
 
 package com.uber.nullaway.dataflow;
 
+import static com.uber.nullaway.NullabilityUtil.castToNonNull;
+
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.VisitorState;
@@ -35,6 +37,7 @@ import java.util.function.Predicate;
 import javax.annotation.Nullable;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
+import javax.lang.model.element.Modifier;
 import javax.lang.model.element.VariableElement;
 import org.checkerframework.nullaway.dataflow.analysis.AnalysisResult;
 import org.checkerframework.nullaway.dataflow.cfg.node.MethodAccessNode;
@@ -78,7 +81,7 @@ public final class AccessPathNullnessAnalysis {
             config,
             handler,
             new CoreNullnessStoreInitializer());
-    this.dataFlow = new DataFlow(config.assertsEnabled());
+    this.dataFlow = new DataFlow(config.assertsEnabled(), handler);
 
     if (config.checkContracts()) {
       this.contractNullnessPropagation =
@@ -138,7 +141,8 @@ public final class AccessPathNullnessAnalysis {
    */
   @Nullable
   public Nullness getNullnessForContractDataflow(TreePath exprPath, Context context) {
-    return dataFlow.expressionDataflow(exprPath, context, contractNullnessPropagation);
+    return dataFlow.expressionDataflow(
+        exprPath, context, castToNonNull(contractNullnessPropagation));
   }
 
   /**
@@ -162,7 +166,8 @@ public final class AccessPathNullnessAnalysis {
     Set<AccessPath> nonnullAccessPaths = nullnessResult.getAccessPathsWithValue(Nullness.NONNULL);
     Set<Element> result = new LinkedHashSet<>();
     for (AccessPath ap : nonnullAccessPaths) {
-      if (ap.getRoot().isReceiver()) {
+      // A null root represents the receiver
+      if (ap.getRoot() == null) {
         ImmutableList<AccessPathElement> elements = ap.getElements();
         if (elements.size() == 1) {
           Element elem = elements.get(0).getJavaElement();
@@ -206,7 +211,7 @@ public final class AccessPathNullnessAnalysis {
   }
 
   /**
-   * Get nullness info for local variables before some node
+   * Get nullness info for local variables (and final fields) before some node
    *
    * @param path tree path to some AST node within a method / lambda / initializer
    * @param state visitor state
@@ -220,13 +225,22 @@ public final class AccessPathNullnessAnalysis {
     }
     return store.filterAccessPaths(
         (ap) -> {
-          if (ap.getElements().size() == 0) {
-            AccessPath.Root root = ap.getRoot();
-            if (!root.isReceiver()) {
-              Element e = root.getVarElement();
-              return e.getKind().equals(ElementKind.PARAMETER)
-                  || e.getKind().equals(ElementKind.LOCAL_VARIABLE);
+          boolean allAPNonRootElementsAreFinalFields = true;
+          for (AccessPathElement ape : ap.getElements()) {
+            Element e = ape.getJavaElement();
+            if (!e.getKind().equals(ElementKind.FIELD)
+                || !e.getModifiers().contains(Modifier.FINAL)) {
+              allAPNonRootElementsAreFinalFields = false;
+              break;
             }
+          }
+          if (allAPNonRootElementsAreFinalFields) {
+            Element e = ap.getRoot();
+            return e == null // This is the case for: this(.f)* where each f is a final field.
+                || e.getKind().equals(ElementKind.PARAMETER)
+                || e.getKind().equals(ElementKind.LOCAL_VARIABLE)
+                || (e.getKind().equals(ElementKind.FIELD)
+                    && e.getModifiers().contains(Modifier.FINAL));
           }
 
           return handler.includeApInfoInSavedContext(ap, state);
@@ -303,10 +317,9 @@ public final class AccessPathNullnessAnalysis {
     Set<AccessPath> nonnullAccessPaths = nullnessResult.getAccessPathsWithValue(Nullness.NONNULL);
     Set<Element> result = new LinkedHashSet<>();
     for (AccessPath ap : nonnullAccessPaths) {
-      assert !ap.getRoot().isReceiver();
-      Element varElement = ap.getRoot().getVarElement();
-      if (varElement.getKind().equals(ElementKind.FIELD)) {
-        result.add(varElement);
+      Element element = ap.getRoot();
+      if (element != null && element.getKind().equals(ElementKind.FIELD)) {
+        result.add(element);
       }
     }
     return result;
@@ -325,6 +338,7 @@ public final class AccessPathNullnessAnalysis {
    * @param context Javac context
    * @return the final NullnessStore on exit from the method.
    */
+  @Nullable
   public NullnessStore forceRunOnMethod(TreePath methodPath, Context context) {
     return dataFlow.finalResult(methodPath, context, nullnessPropagation);
   }
@@ -343,9 +357,10 @@ public final class AccessPathNullnessAnalysis {
 
     // We use the CFG to get the Node corresponding to the expression
     Set<Node> exprNodes =
-        dataFlow
-            .getControlFlowGraph(exprPath, context, nullnessPropagation)
-            .getNodesCorrespondingToTree(exprPath.getLeaf());
+        castToNonNull(
+            dataFlow
+                .getControlFlowGraph(exprPath, context, nullnessPropagation)
+                .getNodesCorrespondingToTree(exprPath.getLeaf()));
 
     if (exprNodes.size() != 1) {
       // Since the expression must have a single corresponding node
@@ -357,9 +372,7 @@ public final class AccessPathNullnessAnalysis {
         AccessPath.fromBaseAndElement(exprNodes.iterator().next(), variableElement, apContext);
 
     if (store != null && ap != null) {
-      if (store
-          .getAccessPathsWithValue(Nullness.NONNULL)
-          .stream()
+      if (store.getAccessPathsWithValue(Nullness.NONNULL).stream()
           .anyMatch(accessPath -> accessPath.equals(ap))) {
         return Nullness.NONNULL;
       }

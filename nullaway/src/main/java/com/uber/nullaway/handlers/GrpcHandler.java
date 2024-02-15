@@ -21,7 +21,9 @@
  */
 package com.uber.nullaway.handlers;
 
-import com.google.common.base.Preconditions;
+import static com.uber.nullaway.ASTHelpersBackports.getEnclosedElements;
+import static com.uber.nullaway.NullabilityUtil.castToNonNull;
+
 import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.VisitorState;
 import com.google.errorprone.suppliers.Supplier;
@@ -32,9 +34,9 @@ import com.sun.source.tree.MethodInvocationTree;
 import com.sun.tools.javac.code.Symbol;
 import com.sun.tools.javac.code.Type;
 import com.sun.tools.javac.code.Types;
-import com.sun.tools.javac.util.Context;
 import com.uber.nullaway.NullAway;
 import com.uber.nullaway.Nullness;
+import com.uber.nullaway.annotations.Initializer;
 import com.uber.nullaway.dataflow.AccessPath;
 import com.uber.nullaway.dataflow.AccessPathNullnessPropagation;
 import java.util.ArrayList;
@@ -59,9 +61,14 @@ public class GrpcHandler extends BaseNoOpHandler {
   private static final Supplier<Type> GRPC_METADATA_KEY_TYPE_SUPPLIER =
       Suppliers.typeFromString(GRPC_METADATA_KEY_TNAME);
 
-  @Nullable private Optional<Type> grpcMetadataType;
-  @Nullable private Optional<Type> grpcKeyType;
+  private Optional<Type> grpcMetadataType;
+  private Optional<Type> grpcKeyType;
 
+  /**
+   * This method is annotated {@code @Initializer} since it will be invoked when the first class is
+   * processed, before any other handler methods
+   */
+  @Initializer
   @Override
   public void onMatchTopLevelClass(
       NullAway analysis, ClassTree tree, VisitorState state, Symbol.ClassSymbol classSymbol) {
@@ -78,22 +85,24 @@ public class GrpcHandler extends BaseNoOpHandler {
   @Override
   public NullnessHint onDataflowVisitMethodInvocation(
       MethodInvocationNode node,
-      Types types,
-      Context context,
+      Symbol.MethodSymbol symbol,
+      VisitorState state,
       AccessPath.AccessPathContext apContext,
       AccessPathNullnessPropagation.SubNodeValues inputs,
       AccessPathNullnessPropagation.Updates thenUpdates,
       AccessPathNullnessPropagation.Updates elseUpdates,
       AccessPathNullnessPropagation.Updates bothUpdates) {
-    MethodInvocationTree tree = node.getTree();
-    Symbol.MethodSymbol symbol = ASTHelpers.getSymbol(tree);
+    MethodInvocationTree tree = castToNonNull(node.getTree());
+    Types types = state.getTypes();
     if (grpcIsMetadataContainsKeyCall(symbol, types)) {
       // On seeing o.containsKey(k), set AP for o.get(k) to @NonNull
       Element getter = getGetterForMetadataSubtype(symbol.enclClass(), types);
       Node base = node.getTarget().getReceiver();
       // Argument list and types should be already checked by grpcIsMetadataContainsKeyCall
       Symbol keyArgSymbol = ASTHelpers.getSymbol(tree.getArguments().get(0));
-      if (getter != null && keyArgSymbol.getKind().equals(ElementKind.FIELD)) {
+      if (getter != null
+          && keyArgSymbol instanceof Symbol.VarSymbol
+          && keyArgSymbol.getKind().equals(ElementKind.FIELD)) {
         Symbol.VarSymbol varSymbol = (Symbol.VarSymbol) keyArgSymbol;
         String immutableFieldFQN =
             varSymbol.enclClass().flatName().toString() + "." + varSymbol.flatName().toString();
@@ -119,7 +128,7 @@ public class GrpcHandler extends BaseNoOpHandler {
   private Symbol.MethodSymbol getGetterForMetadataSubtype(
       Symbol.ClassSymbol classSymbol, Types types) {
     // Is there a better way than iteration?
-    for (Symbol elem : classSymbol.getEnclosedElements()) {
+    for (Symbol elem : getEnclosedElements(classSymbol)) {
       if (elem.getKind().equals(ElementKind.METHOD)) {
         Symbol.MethodSymbol methodSymbol = (Symbol.MethodSymbol) elem;
         if (grpcIsMetadataGetCall(methodSymbol, types)) {
@@ -131,8 +140,6 @@ public class GrpcHandler extends BaseNoOpHandler {
   }
 
   private boolean grpcIsMetadataContainsKeyCall(Symbol.MethodSymbol symbol, Types types) {
-    Preconditions.checkNotNull(grpcMetadataType);
-    Preconditions.checkNotNull(grpcKeyType);
     // noinspection ConstantConditions
     return grpcMetadataType.isPresent()
         && grpcKeyType.isPresent()
@@ -145,8 +152,6 @@ public class GrpcHandler extends BaseNoOpHandler {
   }
 
   private boolean grpcIsMetadataGetCall(Symbol.MethodSymbol symbol, Types types) {
-    Preconditions.checkNotNull(grpcMetadataType);
-    Preconditions.checkNotNull(grpcKeyType);
     // noinspection ConstantConditions
     return grpcMetadataType.isPresent()
         && grpcKeyType.isPresent()

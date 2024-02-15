@@ -52,5 +52,19 @@ public class ErrorMessage {
     PRECONDITION_NOT_SATISFIED,
     WRONG_OVERRIDE_POSTCONDITION,
     WRONG_OVERRIDE_PRECONDITION,
+    TYPE_PARAMETER_CANNOT_BE_NULLABLE,
+    ASSIGN_GENERIC_NULLABLE,
+    RETURN_NULLABLE_GENERIC,
+    PASS_NULLABLE_GENERIC,
+    WRONG_OVERRIDE_RETURN_GENERIC,
+    WRONG_OVERRIDE_PARAM_GENERIC,
+  }
+
+  public String getMessage() {
+    return message;
+  }
+
+  public MessageTypes getMessageType() {
+    return messageType;
   }
 }
