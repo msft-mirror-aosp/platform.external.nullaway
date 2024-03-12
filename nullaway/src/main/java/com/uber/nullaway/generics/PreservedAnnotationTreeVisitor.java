@@ -104,49 +104,10 @@ public class PreservedAnnotationTreeVisitor extends SimpleTreeVisitor<Type, Void
     TypeMetadata create(com.sun.tools.javac.util.List<Attribute.TypeCompound> attrs);
 
     Type cloneTypeWithMetadata(Type typeToBeCloned, TypeMetadata metaData);
-  }
 
-  /**
-   * Provides implementations for methods under TypeMetadataBuilder compatible with JDK 17 and
-   * earlier versions.
-   */
-  private static class JDK17AndEarlierTypeMetadataBuilder implements TypeMetadataBuilder {
-
-    @Override
-    public TypeMetadata create(com.sun.tools.javac.util.List<Attribute.TypeCompound> attrs) {
-      return new TypeMetadata(new TypeMetadata.Annotations(attrs));
-    }
-
-    /**
-     * Clones the given type with the specified Metadata for getting the right nullability
-     * annotations.
-     *
-     * @param typeToBeCloned The Type we want to clone with the required Nullability Metadata
-     * @param metadata The required Nullability metadata which is lost from the type
-     * @return Type after it has been cloned by applying the required Nullability metadata
-     */
-    @Override
-    public Type cloneTypeWithMetadata(Type typeToBeCloned, TypeMetadata metadata) {
-      return typeToBeCloned.cloneWithMetadata(metadata);
-    }
-  }
-
-  /**
-   * Provides implementations for methods under TypeMetadataBuilder compatible with the updates made
-   * to the library methods for Jdk 21. The implementation calls the logic specific to JDK 21
-   * indirectly using MethodHandles since we still need the code to compile on earlier versions.
-   */
-  private static class JDK21TypeMetadataBuilder implements TypeMetadataBuilder {
-
-    private static final MethodHandle typeMetadataHandle = createHandle();
-    private static final MethodHandle addMetadataHandle =
-        createVirtualMethodHandle(Type.class, TypeMetadata.class, Type.class, "addMetadata");
-    private static final MethodHandle dropMetadataHandle =
-        createVirtualMethodHandle(Type.class, Class.class, Type.class, "dropMetadata");
-
-    private static MethodHandle createHandle() {
+    static MethodHandle createAnnotationsCtorHandle(Class<?> paramTypeClass) {
       MethodHandles.Lookup lookup = MethodHandles.lookup();
-      MethodType mt = MethodType.methodType(void.class, com.sun.tools.javac.util.ListBuffer.class);
+      MethodType mt = MethodType.methodType(void.class, paramTypeClass);
       try {
         return lookup.findConstructor(TypeMetadata.Annotations.class, mt);
       } catch (NoSuchMethodException e) {
@@ -165,7 +126,7 @@ public class PreservedAnnotationTreeVisitor extends SimpleTreeVisitor<Type, Void
      * @param methodName Name of the desired method
      * @return The appropriate MethodHandle for the virtual method
      */
-    private static MethodHandle createVirtualMethodHandle(
+    static MethodHandle createVirtualMethodHandle(
         Class<?> retTypeClass, Class<?> paramTypeClass, Class<?> refClass, String methodName) {
       MethodHandles.Lookup lookup = MethodHandles.lookup();
       MethodType mt = MethodType.methodType(retTypeClass, paramTypeClass);
@@ -177,6 +138,60 @@ public class PreservedAnnotationTreeVisitor extends SimpleTreeVisitor<Type, Void
         throw new RuntimeException(e);
       }
     }
+
+  }
+
+  /**
+   * Provides implementations for methods under TypeMetadataBuilder compatible with JDK 17 and
+   * earlier versions.
+   */
+  private static class JDK17AndEarlierTypeMetadataBuilder implements TypeMetadataBuilder {
+
+    private static final MethodHandle typeMetadataHandle =
+        TypeMetadataBuilder.createAnnotationsCtorHandle(com.sun.tools.javac.util.List.class);
+    private static final MethodHandle cloneHandle = TypeMetadataBuilder.createVirtualMethodHandle(
+            Type.class, TypeMetadata.class, Type.class, "cloneWithMetadata");
+
+    @Override
+    public TypeMetadata create(com.sun.tools.javac.util.List<Attribute.TypeCompound> attrs) {
+      try {
+        return (TypeMetadata) typeMetadataHandle.invoke(attrs);
+      } catch (Throwable e) {
+        throw new RuntimeException(e);
+      }
+    }
+
+    /**
+     * Clones the given type with the specified Metadata for getting the right nullability
+     * annotations.
+     *
+     * @param typeToBeCloned The Type we want to clone with the required Nullability Metadata
+     * @param metadata The required Nullability metadata which is lost from the type
+     * @return Type after it has been cloned by applying the required Nullability metadata
+     */
+    @Override
+    public Type cloneTypeWithMetadata(Type typeToBeCloned, TypeMetadata metadata) {
+      try {
+        return (Type) cloneHandle.invoke(typeToBeCloned, metadata);
+      } catch (Throwable e) {
+        throw new RuntimeException(e);
+      }
+    }
+  }
+
+  /**
+   * Provides implementations for methods under TypeMetadataBuilder compatible with the updates made
+   * to the library methods for Jdk 21. The implementation calls the logic specific to JDK 21
+   * indirectly using MethodHandles since we still need the code to compile on earlier versions.
+   */
+  private static class JDK21TypeMetadataBuilder implements TypeMetadataBuilder {
+
+    private static final MethodHandle typeMetadataHandle =
+        TypeMetadataBuilder.createAnnotationsCtorHandle(com.sun.tools.javac.util.ListBuffer.class);
+    private static final MethodHandle addMetadataHandle = TypeMetadataBuilder.createVirtualMethodHandle(
+            Type.class, TypeMetadata.class, Type.class, "addMetadata");
+    private static final MethodHandle dropMetadataHandle = TypeMetadataBuilder.createVirtualMethodHandle(
+            Type.class, Class.class, Type.class, "dropMetadata");
 
     @Override
     public TypeMetadata create(com.sun.tools.javac.util.List<Attribute.TypeCompound> attrs) {
