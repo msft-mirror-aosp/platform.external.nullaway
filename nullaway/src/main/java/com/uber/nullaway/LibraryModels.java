@@ -22,9 +22,12 @@
 
 package com.uber.nullaway;
 
+import com.google.auto.value.AutoValue;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSetMultimap;
 import com.sun.tools.javac.code.Symbol;
+import com.uber.nullaway.handlers.stream.StreamTypeRecord;
 import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -84,7 +87,9 @@ public interface LibraryModels {
    * Get (method, parameter) pairs that cause the method to return <code>null</code> when passed
    * <code>null</code> on that parameter.
    *
-   * <p>This is equivalent to annotating a method with a contract like:
+   * <p>This is equivalent to annotating a method with both a {@code @Nullable} return type
+   * <em>and</em> a {@code @Contract} annotation specifying that if the parameter is
+   * {@code @NonNull} then the return is {@code @NonNull}, e.g.:
    *
    * <pre><code>@Contract("!null -&gt; !null") @Nullable</code></pre>
    *
@@ -108,7 +113,50 @@ public interface LibraryModels {
   ImmutableSet<MethodRef> nonNullReturns();
 
   /**
-   * representation of a method as a qualified class name + a signature for the method
+   * Get (method, parameter) pairs that act as castToNonNull(...) methods.
+   *
+   * <p>Here, the parameter index determines the argument position of the reference being cast to
+   * non-null.
+   *
+   * <p>We still provide the CLI configuration `-XepOpt:NullAway:CastToNonNullMethod` as the default
+   * way to define the common case of a single-argument {@code @NonNull Object
+   * castToNonNull(@Nullable Object o)}} cast method.
+   *
+   * <p>However, in some cases, the user might wish to have a cast method that takes multiple
+   * arguments, in addition to the <code>@Nullable</code> value being cast. For these cases,
+   * providing a library model allows for more precise error reporting whenever a known non-null
+   * value is passed to such method, rendering the cast unnecessary.
+   *
+   * <p>Note that we can't auto-add castToNonNull(...) methods taking more than one argument, simply
+   * because there might be no general, automated way of synthesizing the required arguments.
+   */
+  ImmutableSetMultimap<MethodRef, Integer> castToNonNullMethods();
+
+  /**
+   * Get the set of library fields that may be {@code null}.
+   *
+   * @return set of library fields that may be {@code null}.
+   */
+  ImmutableSet<FieldRef> nullableFields();
+
+  /**
+   * Get a list of custom stream library specifications.
+   *
+   * <p>This allows users to define filter/map/other methods for APIs which behave similarly to Java
+   * 8 streams or ReactiveX streams, so that NullAway is able to understand nullability invariants
+   * across stream API calls. See {@link com.uber.nullaway.handlers.stream.StreamModelBuilder} for
+   * details on how to construct these {@link com.uber.nullaway.handlers.stream.StreamTypeRecord}
+   * specs. A full example is available at {@link
+   * com.uber.nullaway.testlibrarymodels.TestLibraryModels}.
+   *
+   * @return A list of StreamTypeRecord specs (usually generated using StreamModelBuilder).
+   */
+  default ImmutableList<StreamTypeRecord> customStreamNullabilitySpecs() {
+    return ImmutableList.of();
+  }
+
+  /**
+   * Representation of a method as a qualified class name + a signature for the method
    *
    * <p>The formatting of a method signature should match the result of calling {@link
    * Symbol.MethodSymbol#toString()} on the corresponding symbol. See {@link
@@ -129,6 +177,7 @@ public interface LibraryModels {
   final class MethodRef {
 
     public final String enclosingClass;
+
     /**
      * we store the method name separately to enable fast comparison with MethodSymbols. See {@link
      * com.uber.nullaway.handlers.LibraryModelsHandler.OptimizedLibraryModels}
@@ -201,6 +250,19 @@ public interface LibraryModels {
           + fullMethodSig
           + '\''
           + '}';
+    }
+  }
+
+  /** Representation of a field as a qualified class name + a field name */
+  @AutoValue
+  abstract class FieldRef {
+
+    public abstract String getEnclosingClassName();
+
+    public abstract String getFieldName();
+
+    public static FieldRef fieldRef(String enclosingClass, String fieldName) {
+      return new AutoValue_LibraryModels_FieldRef(enclosingClass, fieldName);
     }
   }
 }

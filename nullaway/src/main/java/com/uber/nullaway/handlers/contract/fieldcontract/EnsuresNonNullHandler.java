@@ -22,16 +22,14 @@
 
 package com.uber.nullaway.handlers.contract.fieldcontract;
 
+import static com.uber.nullaway.NullabilityUtil.castToNonNull;
 import static com.uber.nullaway.NullabilityUtil.getAnnotationValueArray;
 
-import com.google.common.base.Preconditions;
 import com.google.errorprone.VisitorState;
 import com.google.errorprone.util.ASTHelpers;
 import com.sun.source.tree.MethodTree;
 import com.sun.source.util.TreePath;
 import com.sun.tools.javac.code.Symbol;
-import com.sun.tools.javac.code.Types;
-import com.sun.tools.javac.util.Context;
 import com.uber.nullaway.ErrorMessage;
 import com.uber.nullaway.NullAway;
 import com.uber.nullaway.Nullness;
@@ -106,7 +104,8 @@ public class EnsuresNonNullHandler extends AbstractFieldContractHandler {
                   new ErrorMessage(ErrorMessage.MessageTypes.POSTCONDITION_NOT_SATISFIED, message),
                   tree,
                   analysis.buildDescription(tree),
-                  state));
+                  state,
+                  null));
       return false;
     }
     return true;
@@ -140,7 +139,7 @@ public class EnsuresNonNullHandler extends AbstractFieldContractHandler {
     errorMessage
         .append(
             "postcondition inheritance is violated, this method must guarantee that all fields written in the @EnsuresNonNull annotation of overridden method ")
-        .append(ASTHelpers.enclosingClass(overriddenMethod).getSimpleName())
+        .append(castToNonNull(ASTHelpers.enclosingClass(overriddenMethod)).getSimpleName())
         .append(".")
         .append(overriddenMethod.getSimpleName())
         .append(" are @NonNull at exit point as well. Fields [");
@@ -162,7 +161,8 @@ public class EnsuresNonNullHandler extends AbstractFieldContractHandler {
                     errorMessage.toString()),
                 tree,
                 analysis.buildDescription(tree),
-                state));
+                state,
+                null));
   }
 
   /**
@@ -173,8 +173,8 @@ public class EnsuresNonNullHandler extends AbstractFieldContractHandler {
   @Override
   public NullnessHint onDataflowVisitMethodInvocation(
       MethodInvocationNode node,
-      Types types,
-      Context context,
+      Symbol.MethodSymbol methodSymbol,
+      VisitorState state,
       AccessPath.AccessPathContext apContext,
       AccessPathNullnessPropagation.SubNodeValues inputs,
       AccessPathNullnessPropagation.Updates thenUpdates,
@@ -184,16 +184,15 @@ public class EnsuresNonNullHandler extends AbstractFieldContractHandler {
       // A synthetic node might be inserted by the Checker Framework during CFG construction, it is
       // safer to do a null check here.
       return super.onDataflowVisitMethodInvocation(
-          node, types, context, apContext, inputs, thenUpdates, elseUpdates, bothUpdates);
+          node, methodSymbol, state, apContext, inputs, thenUpdates, elseUpdates, bothUpdates);
     }
-    Symbol.MethodSymbol methodSymbol = ASTHelpers.getSymbol(node.getTree());
-    Preconditions.checkNotNull(methodSymbol);
     Set<String> fieldNames = getAnnotationValueArray(methodSymbol, annotName, false);
     if (fieldNames != null) {
       fieldNames = ContractUtils.trimReceivers(fieldNames);
       for (String fieldName : fieldNames) {
         VariableElement field =
-            getInstanceFieldOfClass(ASTHelpers.enclosingClass(methodSymbol), fieldName);
+            getInstanceFieldOfClass(
+                castToNonNull(ASTHelpers.enclosingClass(methodSymbol)), fieldName);
         if (field == null) {
           // Invalid annotation, will result in an error during validation. For now, skip field.
           continue;
@@ -207,6 +206,6 @@ public class EnsuresNonNullHandler extends AbstractFieldContractHandler {
       }
     }
     return super.onDataflowVisitMethodInvocation(
-        node, types, context, apContext, inputs, thenUpdates, elseUpdates, bothUpdates);
+        node, methodSymbol, state, apContext, inputs, thenUpdates, elseUpdates, bothUpdates);
   }
 }

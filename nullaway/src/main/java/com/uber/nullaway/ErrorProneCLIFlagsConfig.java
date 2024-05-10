@@ -24,6 +24,8 @@ package com.uber.nullaway;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.ErrorProneFlags;
+import com.uber.nullaway.fixserialization.FixSerializationConfig;
+import com.uber.nullaway.fixserialization.adapters.SerializationAdapter;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.Optional;
@@ -47,8 +49,12 @@ final class ErrorProneCLIFlagsConfig extends AbstractConfig {
   static final String FL_CLASS_ANNOTATIONS_TO_EXCLUDE =
       EP_FL_NAMESPACE + ":ExcludedClassAnnotations";
   static final String FL_SUGGEST_SUPPRESSIONS = EP_FL_NAMESPACE + ":SuggestSuppressions";
+
+  static final String FL_CLASS_ANNOTATIONS_GENERATED =
+      EP_FL_NAMESPACE + ":CustomGeneratedCodeAnnotations";
   static final String FL_GENERATED_UNANNOTATED = EP_FL_NAMESPACE + ":TreatGeneratedAsUnannotated";
   static final String FL_ACKNOWLEDGE_ANDROID_RECENT = EP_FL_NAMESPACE + ":AcknowledgeAndroidRecent";
+  static final String FL_JSPECIFY_MODE = EP_FL_NAMESPACE + ":JSpecifyMode";
   static final String FL_EXCLUDED_FIELD_ANNOT = EP_FL_NAMESPACE + ":ExcludedFieldAnnotations";
   static final String FL_INITIALIZER_ANNOT = EP_FL_NAMESPACE + ":CustomInitializerAnnotations";
   static final String FL_NULLABLE_ANNOT = EP_FL_NAMESPACE + ":CustomNullableAnnotations";
@@ -66,6 +72,9 @@ final class ErrorProneCLIFlagsConfig extends AbstractConfig {
   static final String FL_OPTIONAL_CLASS_PATHS =
       EP_FL_NAMESPACE + ":CheckOptionalEmptinessCustomClasses";
   static final String FL_SUPPRESS_COMMENT = EP_FL_NAMESPACE + ":AutoFixSuppressionComment";
+
+  static final String FL_SKIP_LIBRARY_MODELS = EP_FL_NAMESPACE + ":IgnoreLibraryModelsFor";
+
   /** --- JarInfer configs --- */
   static final String FL_JI_ENABLED = EP_FL_NAMESPACE + ":JarInferEnabled";
 
@@ -75,10 +84,26 @@ final class ErrorProneCLIFlagsConfig extends AbstractConfig {
   static final String FL_JI_REGEX_CODE_PATH = EP_FL_NAMESPACE + ":JarInferRegexStripCodeJar";
   static final String FL_ERROR_URL = EP_FL_NAMESPACE + ":ErrorURL";
 
+  /** --- Serialization configs --- */
+  static final String FL_FIX_SERIALIZATION = EP_FL_NAMESPACE + ":SerializeFixMetadata";
+
+  static final String FL_FIX_SERIALIZATION_VERSION =
+      EP_FL_NAMESPACE + ":SerializeFixMetadataVersion";
+
+  static final String FL_FIX_SERIALIZATION_CONFIG_PATH =
+      EP_FL_NAMESPACE + ":FixSerializationConfigPath";
+
   private static final String DELIMITER = ",";
 
   static final ImmutableSet<String> DEFAULT_CLASS_ANNOTATIONS_TO_EXCLUDE =
       ImmutableSet.of("lombok.Generated");
+
+  // Annotations with simple name ".Generated" need not be manually listed, and are always matched
+  // by default
+  // TODO: org.apache.avro.specific.AvroGenerated should go here, but we are skipping it for the
+  // next release to better test the effect of this feature (users can always manually configure
+  // it).
+  static final ImmutableSet<String> DEFAULT_CLASS_ANNOTATIONS_GENERATED = ImmutableSet.of();
 
   static final ImmutableSet<String> DEFAULT_KNOWN_INITIALIZERS =
       ImmutableSet.of(
@@ -105,7 +130,11 @@ final class ErrorProneCLIFlagsConfig extends AbstractConfig {
           "androidx.fragment.app.Fragment.onActivityCreated",
           "androidx.fragment.app.Fragment.onViewCreated",
           // Multidex app
-          "android.support.multidex.Application.onCreate");
+          "android.support.multidex.Application.onCreate",
+          // Apache Flink
+          // See docs:
+          // https://nightlies.apache.org/flink/flink-docs-master/api/java/org/apache/flink/api/common/functions/RichFunction.html#open-org.apache.flink.api.common.functions.OpenContext-
+          "org.apache.flink.api.common.functions.RichFunction.open");
 
   static final ImmutableSet<String> DEFAULT_INITIALIZER_ANNOT =
       ImmutableSet.of(
@@ -127,7 +156,9 @@ final class ErrorProneCLIFlagsConfig extends AbstractConfig {
           "javax.inject.Inject", // no explicit initialization when there is dependency injection
           "com.google.errorprone.annotations.concurrent.LazyInit",
           "org.checkerframework.checker.nullness.qual.MonotonicNonNull",
-          "org.springframework.beans.factory.annotation.Autowired");
+          "org.springframework.beans.factory.annotation.Autowired",
+          "org.springframework.boot.test.mock.mockito.MockBean",
+          "org.springframework.boot.test.mock.mockito.SpyBean");
 
   private static final String DEFAULT_URL = "http://t.uber.com/nullaway";
 
@@ -147,11 +178,15 @@ final class ErrorProneCLIFlagsConfig extends AbstractConfig {
     sourceClassesToExclude = getFlagStringSet(flags, FL_CLASSES_TO_EXCLUDE);
     unannotatedClasses = getFlagStringSet(flags, FL_UNANNOTATED_CLASSES);
     knownInitializers =
-        getKnownInitializers(
-            getFlagStringSet(flags, FL_KNOWN_INITIALIZERS, DEFAULT_KNOWN_INITIALIZERS));
+        getFlagStringSet(flags, FL_KNOWN_INITIALIZERS, DEFAULT_KNOWN_INITIALIZERS).stream()
+            .map(MethodClassAndName::fromClassDotMethod)
+            .collect(ImmutableSet.toImmutableSet());
     excludedClassAnnotations =
         getFlagStringSet(
             flags, FL_CLASS_ANNOTATIONS_TO_EXCLUDE, DEFAULT_CLASS_ANNOTATIONS_TO_EXCLUDE);
+    generatedCodeAnnotations =
+        getFlagStringSet(
+            flags, FL_CLASS_ANNOTATIONS_GENERATED, DEFAULT_CLASS_ANNOTATIONS_GENERATED);
     initializerAnnotations =
         getFlagStringSet(flags, FL_INITIALIZER_ANNOT, DEFAULT_INITIALIZER_ANNOT);
     customNullableAnnotations = getFlagStringSet(flags, FL_NULLABLE_ANNOT, ImmutableSet.of());
@@ -168,6 +203,7 @@ final class ErrorProneCLIFlagsConfig extends AbstractConfig {
         flags.getBoolean(FL_HANDLE_TEST_ASSERTION_LIBRARIES).orElse(false);
     treatGeneratedAsUnannotated = flags.getBoolean(FL_GENERATED_UNANNOTATED).orElse(false);
     acknowledgeAndroidRecent = flags.getBoolean(FL_ACKNOWLEDGE_ANDROID_RECENT).orElse(false);
+    jspecifyMode = flags.getBoolean(FL_JSPECIFY_MODE).orElse(false);
     assertsEnabled = flags.getBoolean(FL_ASSERTS_ENABLED).orElse(false);
     fieldAnnotPattern =
         getPackagePattern(
@@ -183,7 +219,8 @@ final class ErrorProneCLIFlagsConfig extends AbstractConfig {
       throw new IllegalStateException(
           "Invalid -XepOpt:" + FL_SUPPRESS_COMMENT + " value. Comment must be single line.");
     }
-    /** --- JarInfer configs --- */
+    skippedLibraryModels = getFlagStringSet(flags, FL_SKIP_LIBRARY_MODELS);
+    /* --- JarInfer configs --- */
     jarInferEnabled = flags.getBoolean(FL_JI_ENABLED).orElse(false);
     jarInferUseReturnAnnotations = flags.getBoolean(FL_JI_USE_RETURN).orElse(false);
     // The defaults of these two options translate to: remove .aar/.jar from the file name, and also
@@ -199,6 +236,37 @@ final class ErrorProneCLIFlagsConfig extends AbstractConfig {
               + " should only be set when -XepOpt:"
               + FL_ACKNOWLEDGE_RESTRICTIVE
               + " is also set");
+    }
+    serializationActivationFlag = flags.getBoolean(FL_FIX_SERIALIZATION).orElse(false);
+    Optional<String> fixSerializationConfigPath = flags.get(FL_FIX_SERIALIZATION_CONFIG_PATH);
+    if (serializationActivationFlag && !fixSerializationConfigPath.isPresent()) {
+      throw new IllegalStateException(
+          "DO NOT report an issue to Error Prone for this crash!  NullAway Fix Serialization configuration is "
+              + "incorrect.  "
+              + "Must specify AutoFixer Output Directory, using the "
+              + "-XepOpt:"
+              + FL_FIX_SERIALIZATION_CONFIG_PATH
+              + " flag.  If you feel you have gotten this message in error report an issue"
+              + " at https://github.com/uber/NullAway/issues.");
+    }
+    int serializationVersion =
+        flags.getInteger(FL_FIX_SERIALIZATION_VERSION).orElse(SerializationAdapter.LATEST_VERSION);
+    /*
+     * if fixSerializationActivationFlag is false, the default constructor is invoked for
+     * creating FixSerializationConfig which all features are deactivated.  This lets the
+     * field be @Nonnull, allowing us to avoid null checks in various places.
+     */
+    fixSerializationConfig =
+        serializationActivationFlag && fixSerializationConfigPath.isPresent()
+            ? new FixSerializationConfig(fixSerializationConfigPath.get(), serializationVersion)
+            : new FixSerializationConfig();
+    if (serializationActivationFlag && isSuggestSuppressions) {
+      throw new IllegalStateException(
+          "In order to activate Fix Serialization mode ("
+              + FL_FIX_SERIALIZATION
+              + "), Suggest Suppressions mode must be deactivated ("
+              + FL_SUGGEST_SUPPRESSIONS
+              + ")");
     }
   }
 

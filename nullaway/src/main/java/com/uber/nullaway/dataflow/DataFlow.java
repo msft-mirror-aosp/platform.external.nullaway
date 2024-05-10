@@ -18,6 +18,7 @@
 
 package com.uber.nullaway.dataflow;
 
+import static com.uber.nullaway.NullabilityUtil.castToNonNull;
 import static com.uber.nullaway.NullabilityUtil.findEnclosingMethodOrLambdaOrInitializer;
 
 import com.google.auto.value.AutoValue;
@@ -37,6 +38,8 @@ import com.sun.source.util.TreePath;
 import com.sun.tools.javac.processing.JavacProcessingEnvironment;
 import com.sun.tools.javac.util.Context;
 import com.uber.nullaway.NullabilityUtil;
+import com.uber.nullaway.dataflow.cfg.NullAwayCFGBuilder;
+import com.uber.nullaway.handlers.Handler;
 import javax.annotation.Nullable;
 import javax.annotation.processing.ProcessingEnvironment;
 import org.checkerframework.nullaway.dataflow.analysis.AbstractValue;
@@ -48,7 +51,6 @@ import org.checkerframework.nullaway.dataflow.analysis.Store;
 import org.checkerframework.nullaway.dataflow.analysis.TransferFunction;
 import org.checkerframework.nullaway.dataflow.cfg.ControlFlowGraph;
 import org.checkerframework.nullaway.dataflow.cfg.UnderlyingAST;
-import org.checkerframework.nullaway.dataflow.cfg.builder.CFGBuilder;
 
 /**
  * Provides a wrapper around {@link org.checkerframework.nullaway.dataflow.analysis.Analysis}.
@@ -69,8 +71,11 @@ public final class DataFlow {
 
   private final boolean assertsEnabled;
 
-  DataFlow(boolean assertsEnabled) {
+  private final Handler handler;
+
+  DataFlow(boolean assertsEnabled, Handler handler) {
     this.assertsEnabled = assertsEnabled;
+    this.handler = handler;
   }
 
   private final LoadingCache<AnalysisParams, Analysis<?, ?, ?>> analysisCache =
@@ -106,12 +111,14 @@ public final class DataFlow {
                         (LambdaExpressionTree) codePath.getLeaf();
                     MethodTree enclMethod =
                         ASTHelpers.findEnclosingNode(codePath, MethodTree.class);
-                    ClassTree enclClass = ASTHelpers.findEnclosingNode(codePath, ClassTree.class);
+                    ClassTree enclClass =
+                        castToNonNull(ASTHelpers.findEnclosingNode(codePath, ClassTree.class));
                     ast = new UnderlyingAST.CFGLambda(lambdaExpressionTree, enclClass, enclMethod);
                     bodyPath = new TreePath(codePath, lambdaExpressionTree.getBody());
                   } else if (codePath.getLeaf() instanceof MethodTree) {
                     MethodTree method = (MethodTree) codePath.getLeaf();
-                    ClassTree enclClass = ASTHelpers.findEnclosingNode(codePath, ClassTree.class);
+                    ClassTree enclClass =
+                        castToNonNull(ASTHelpers.findEnclosingNode(codePath, ClassTree.class));
                     ast = new UnderlyingAST.CFGMethod(method, enclClass);
                     BlockTree body = method.getBody();
                     if (body == null) {
@@ -127,7 +134,8 @@ public final class DataFlow {
                     bodyPath = codePath;
                   }
 
-                  return CFGBuilder.build(bodyPath, ast, assertsEnabled, !assertsEnabled, env);
+                  return NullAwayCFGBuilder.build(
+                      bodyPath, ast, assertsEnabled, !assertsEnabled, env, handler);
                 }
               });
 
@@ -174,8 +182,12 @@ public final class DataFlow {
    */
   <A extends AbstractValue<A>, S extends Store<S>, T extends ForwardTransferFunction<A, S>>
       ControlFlowGraph getControlFlowGraph(TreePath path, Context context, T transfer) {
-    return dataflow(findEnclosingMethodOrLambdaOrInitializer(path), context, transfer)
-        .getControlFlowGraph();
+    TreePath enclosingMethodOrLambdaOrInitializer = findEnclosingMethodOrLambdaOrInitializer(path);
+    if (enclosingMethodOrLambdaOrInitializer == null) {
+      throw new IllegalArgumentException(
+          "Cannot get CFG for node outside a method, lambda, or initializer");
+    }
+    return dataflow(enclosingMethodOrLambdaOrInitializer, context, transfer).getControlFlowGraph();
   }
 
   /**
@@ -208,6 +220,7 @@ public final class DataFlow {
    * @param <T> transfer function type
    * @return dataflow result at exit of method
    */
+  @Nullable
   public <A extends AbstractValue<A>, S extends Store<S>, T extends ForwardTransferFunction<A, S>>
       S finalResult(TreePath path, Context context, T transfer) {
     final Tree leaf = path.getLeaf();
@@ -253,7 +266,8 @@ public final class DataFlow {
     return resultFor(exprPath, context, transfer);
   }
 
-  private <A extends AbstractValue<A>, S extends Store<S>, T extends ForwardTransferFunction<A, S>>
+  private @Nullable <
+          A extends AbstractValue<A>, S extends Store<S>, T extends ForwardTransferFunction<A, S>>
       AnalysisResult<A, S> resultFor(TreePath exprPath, Context context, T transfer) {
     final TreePath enclosingPath =
         NullabilityUtil.findEnclosingMethodOrLambdaOrInitializer(exprPath);
@@ -285,7 +299,7 @@ public final class DataFlow {
   @AutoValue
   abstract static class CfgParams {
     // Should not be used for hashCode or equals
-    private ProcessingEnvironment environment;
+    private @Nullable ProcessingEnvironment environment;
 
     private static CfgParams create(TreePath codePath, ProcessingEnvironment environment) {
       CfgParams cp = new AutoValue_DataFlow_CfgParams(codePath);
@@ -294,7 +308,7 @@ public final class DataFlow {
     }
 
     ProcessingEnvironment environment() {
-      return environment;
+      return castToNonNull(environment);
     }
 
     abstract TreePath codePath();

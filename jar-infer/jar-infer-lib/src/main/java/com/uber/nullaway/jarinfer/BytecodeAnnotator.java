@@ -15,6 +15,8 @@
  */
 package com.uber.nullaway.jarinfer;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
+
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
 import java.io.BufferedReader;
@@ -210,6 +212,18 @@ public final class BytecodeAnnotator {
     annotateBytecode(is, os, nonnullParams, nullableReturns, javaxNullableDesc, javaxNonnullDesc);
   }
 
+  /**
+   * Create a zip entry with creation time of 0 to ensure that jars always have the same checksum.
+   *
+   * @param name of the zip entry.
+   * @return the zip entry.
+   */
+  private static ZipEntry createZipEntry(String name) {
+    ZipEntry entry = new ZipEntry(name);
+    entry.setTime(0);
+    return entry;
+  }
+
   private static void copyAndAnnotateJarEntry(
       JarEntry jarEntry,
       InputStream is,
@@ -222,12 +236,12 @@ public final class BytecodeAnnotator {
       throws IOException {
     String entryName = jarEntry.getName();
     if (entryName.endsWith(".class")) {
-      jarOS.putNextEntry(new ZipEntry(jarEntry.getName()));
+      jarOS.putNextEntry(createZipEntry(jarEntry.getName()));
       annotateBytecode(is, jarOS, nonnullParams, nullableReturns, nullableDesc, nonnullDesc);
     } else if (entryName.equals("META-INF/MANIFEST.MF")) {
       // Read full file
       StringBuilder stringBuilder = new StringBuilder();
-      BufferedReader br = new BufferedReader(new InputStreamReader(is, "UTF-8"));
+      BufferedReader br = new BufferedReader(new InputStreamReader(is, UTF_8));
       String currentLine;
       while ((currentLine = br.readLine()) != null) {
         stringBuilder.append(currentLine + "\n");
@@ -239,8 +253,8 @@ public final class BytecodeAnnotator {
       if (!manifestText.equals(manifestMinusDigests) && !stripJarSignatures) {
         throw new SignedJarException(SIGNED_JAR_ERROR_MESSAGE);
       }
-      jarOS.putNextEntry(new ZipEntry(jarEntry.getName()));
-      jarOS.write(manifestMinusDigests.getBytes("UTF-8"));
+      jarOS.putNextEntry(createZipEntry(jarEntry.getName()));
+      jarOS.write(manifestMinusDigests.getBytes(UTF_8));
     } else if (entryName.startsWith("META-INF/")
         && (entryName.endsWith(".DSA")
             || entryName.endsWith(".RSA")
@@ -249,7 +263,7 @@ public final class BytecodeAnnotator {
         throw new SignedJarException(SIGNED_JAR_ERROR_MESSAGE);
       } // the case where stripJarSignatures==true is handled by default by skipping these files
     } else {
-      jarOS.putNextEntry(new ZipEntry(jarEntry.getName()));
+      jarOS.putNextEntry(createZipEntry(jarEntry.getName()));
       jarOS.write(IOUtils.toByteArray(is));
     }
     jarOS.closeEntry();
@@ -327,7 +341,7 @@ public final class BytecodeAnnotator {
     while (zipIterator.hasNext()) {
       ZipEntry zipEntry = zipIterator.next();
       InputStream is = inputZip.getInputStream(zipEntry);
-      zipOS.putNextEntry(new ZipEntry(zipEntry.getName()));
+      zipOS.putNextEntry(createZipEntry(zipEntry.getName()));
       if (zipEntry.getName().equals("classes.jar")) {
         JarInputStream jarIS = new JarInputStream(is);
         JarEntry inputJarEntry = jarIS.getNextJarEntry();
