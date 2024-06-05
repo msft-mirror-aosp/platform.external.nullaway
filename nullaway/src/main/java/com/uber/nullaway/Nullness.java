@@ -19,6 +19,8 @@
 package com.uber.nullaway;
 
 import com.sun.tools.javac.code.Symbol;
+import com.sun.tools.javac.code.Type;
+import com.sun.tools.javac.util.List;
 import java.util.stream.Stream;
 import javax.lang.model.element.AnnotationMirror;
 import org.checkerframework.nullaway.dataflow.analysis.AbstractValue;
@@ -128,14 +130,14 @@ public enum Nullness implements AbstractValue<Nullness> {
     return displayName;
   }
 
-  private static boolean hasNullableAnnotation(
+  public static boolean hasNullableAnnotation(
       Stream<? extends AnnotationMirror> annotations, Config config) {
     return annotations
         .map(anno -> anno.getAnnotationType().toString())
         .anyMatch(anno -> isNullableAnnotation(anno, config));
   }
 
-  private static boolean hasNonNullAnnotation(
+  public static boolean hasNonNullAnnotation(
       Stream<? extends AnnotationMirror> annotations, Config config) {
     return annotations
         .map(anno -> anno.getAnnotationType().toString())
@@ -156,6 +158,12 @@ public enum Nullness implements AbstractValue<Nullness> {
         || annotName.endsWith(".checkerframework.checker.nullness.compatqual.NullableDecl")
         // matches javax.annotation.CheckForNull and edu.umd.cs.findbugs.annotations.CheckForNull
         || annotName.endsWith(".CheckForNull")
+        // matches any of the multiple @ParametricNullness annotations used within Guava
+        // (see https://github.com/google/guava/issues/6126)
+        // We check the simple name first and the package prefix second for boolean short
+        // circuiting, as Guava includes
+        // many annotations
+        || (annotName.endsWith(".ParametricNullness") && annotName.startsWith("com.google.common."))
         || (config.acknowledgeAndroidRecent()
             && annotName.equals("androidx.annotation.RecentlyNullable"))
         || config.isCustomNullableAnnotation(annotName);
@@ -184,7 +192,7 @@ public enum Nullness implements AbstractValue<Nullness> {
    * Config)}
    */
   public static boolean hasNonNullAnnotation(Symbol symbol, Config config) {
-    return hasNonNullAnnotation(NullabilityUtil.getAllAnnotations(symbol), config);
+    return hasNonNullAnnotation(NullabilityUtil.getAllAnnotations(symbol, config), config);
   }
 
   /**
@@ -195,7 +203,7 @@ public enum Nullness implements AbstractValue<Nullness> {
    * Config)}
    */
   public static boolean hasNullableAnnotation(Symbol symbol, Config config) {
-    return hasNullableAnnotation(NullabilityUtil.getAllAnnotations(symbol), config);
+    return hasNullableAnnotation(NullabilityUtil.getAllAnnotations(symbol, config), config);
   }
 
   /**
@@ -204,8 +212,34 @@ public enum Nullness implements AbstractValue<Nullness> {
    */
   public static boolean paramHasNullableAnnotation(
       Symbol.MethodSymbol symbol, int paramInd, Config config) {
+    // We treat the (generated) equals() method of record types to have a @Nullable parameter, as
+    // the generated implementation handles null (as required by the contract of Object.equals())
+    if (isRecordEqualsParam(symbol, paramInd)) {
+      return true;
+    }
     return hasNullableAnnotation(
-        NullabilityUtil.getAllAnnotationsForParameter(symbol, paramInd), config);
+        NullabilityUtil.getAllAnnotationsForParameter(symbol, paramInd, config), config);
+  }
+
+  private static boolean isRecordEqualsParam(Symbol.MethodSymbol symbol, int paramInd) {
+    // Here we compare with toString() to preserve compatibility with JDK 11 (records only
+    // introduced in JDK 16)
+    if (!symbol.owner.getKind().toString().equals("RECORD")) {
+      return false;
+    }
+    if (!symbol.getSimpleName().contentEquals("equals")) {
+      return false;
+    }
+    // Check for a boolean return type and a single parameter of type java.lang.Object
+    Type type = symbol.type;
+    List<Type> parameterTypes = type.getParameterTypes();
+    if (!(type.getReturnType().toString().equals("boolean")
+        && parameterTypes != null
+        && parameterTypes.size() == 1
+        && parameterTypes.get(0).toString().equals("java.lang.Object"))) {
+      return false;
+    }
+    return paramInd == 0;
   }
 
   /**
@@ -215,6 +249,6 @@ public enum Nullness implements AbstractValue<Nullness> {
   public static boolean paramHasNonNullAnnotation(
       Symbol.MethodSymbol symbol, int paramInd, Config config) {
     return hasNonNullAnnotation(
-        NullabilityUtil.getAllAnnotationsForParameter(symbol, paramInd), config);
+        NullabilityUtil.getAllAnnotationsForParameter(symbol, paramInd, config), config);
   }
 }

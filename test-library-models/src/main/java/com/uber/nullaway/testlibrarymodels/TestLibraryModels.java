@@ -15,12 +15,16 @@
  */
 package com.uber.nullaway.testlibrarymodels;
 
+import static com.uber.nullaway.LibraryModels.FieldRef.fieldRef;
 import static com.uber.nullaway.LibraryModels.MethodRef.methodRef;
 
 import com.google.auto.service.AutoService;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSetMultimap;
 import com.uber.nullaway.LibraryModels;
+import com.uber.nullaway.handlers.stream.StreamModelBuilder;
+import com.uber.nullaway.handlers.stream.StreamTypeRecord;
 
 @AutoService(LibraryModels.class)
 public class TestLibraryModels implements LibraryModels {
@@ -53,7 +57,9 @@ public class TestLibraryModels implements LibraryModels {
 
   @Override
   public ImmutableSetMultimap<MethodRef, Integer> nullImpliesFalseParameters() {
-    return ImmutableSetMultimap.of();
+    return ImmutableSetMultimap.of(
+        methodRef("com.uber.lib.unannotated.UnannotatedWithModels", "isNonNull(java.lang.Object)"),
+        0);
   }
 
   @Override
@@ -63,11 +69,67 @@ public class TestLibraryModels implements LibraryModels {
 
   @Override
   public ImmutableSet<MethodRef> nullableReturns() {
-    return ImmutableSet.of();
+    return ImmutableSet.of(
+        methodRef("com.uber.AnnotatedWithModels", "returnsNullFromModel()"),
+        methodRef("com.uber.lib.unannotated.UnannotatedWithModels", "returnsNullUnannotated()"),
+        methodRef("com.uber.lib.unannotated.UnannotatedWithModels", "returnsNullUnannotated2()"));
   }
 
   @Override
   public ImmutableSet<MethodRef> nonNullReturns() {
     return ImmutableSet.of();
+  }
+
+  @Override
+  public ImmutableSetMultimap<MethodRef, Integer> castToNonNullMethods() {
+    return ImmutableSetMultimap.<MethodRef, Integer>builder()
+        .put(
+            methodRef("com.uber.nullaway.testdata.Util", "<T>castToNonNull(T,java.lang.String)"), 0)
+        .put(
+            methodRef(
+                "com.uber.nullaway.testdata.Util", "<T>castToNonNull(java.lang.String,T,int)"),
+            1)
+        .build();
+  }
+
+  @Override
+  public ImmutableList<StreamTypeRecord> customStreamNullabilitySpecs() {
+    // Identical to the default model for java.util.stream.Stream, but with the original type
+    // renamed
+    return StreamModelBuilder.start()
+        .addStreamTypeFromName("com.uber.nullaway.testdata.unannotated.CustomStream")
+        .withFilterMethodFromSignature("filter(java.util.function.Predicate<? super T>)")
+        .withMapMethodFromSignature(
+            "<R>map(java.util.function.Function<? super T,? extends R>)",
+            "apply",
+            ImmutableSet.of(0))
+        .withMapMethodFromSignature(
+            "mapToInt(java.util.function.ToIntFunction<? super T>)",
+            "applyAsInt",
+            ImmutableSet.of(0))
+        .withMapMethodFromSignature(
+            "mapToLong(java.util.function.ToLongFunction<? super T>)",
+            "applyAsLong",
+            ImmutableSet.of(0))
+        .withMapMethodFromSignature(
+            "mapToDouble(java.util.function.ToDoubleFunction<? super T>)",
+            "applyAsDouble",
+            ImmutableSet.of(0))
+        .withMapMethodFromSignature(
+            "forEach(java.util.function.Consumer<? super T>)", "accept", ImmutableSet.of(0))
+        .withMapMethodFromSignature(
+            "forEachOrdered(java.util.function.Consumer<? super T>)", "accept", ImmutableSet.of(0))
+        .withMapMethodAllFromName("flatMap", "apply", ImmutableSet.of(0))
+        .withPassthroughMethodFromSignature("distinct()")
+        .end();
+  }
+
+  @Override
+  public ImmutableSet<FieldRef> nullableFields() {
+    return ImmutableSet.<FieldRef>builder()
+        .add(
+            fieldRef("com.uber.lib.unannotated.UnannotatedWithModels", "nullableFieldUnannotated1"),
+            fieldRef("com.uber.lib.unannotated.UnannotatedWithModels", "nullableFieldUnannotated2"))
+        .build();
   }
 }
