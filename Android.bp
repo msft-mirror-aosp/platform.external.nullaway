@@ -57,9 +57,9 @@ java_library_host {
     exclude_srcs: ["nullaway/src/test/**/*.java"],
 
     static_libs: [
+        "checkerframework_dataflow_nullaway",
+        "error_prone_core",
         "guava",
-        "//external/error_prone:error_prone_checkerframework_dataflow_nullaway",
-        "//external/error_prone:error_prone_core",
         "nullaway_annotations",
     ],
 
@@ -86,6 +86,15 @@ java_library_host {
     ],
 }
 
+// dataflow-nullaway is identical to dataflow-errorprone but uses a different
+// package name - we can transform one into the other with jarjar
+java_library_host {
+    name: "checkerframework_dataflow_nullaway",
+    visibility: ["//visibility:private"],
+    static_libs: ["checkerframework_dataflow_errorprone_prebuilt_jar"],
+    jarjar_rules: "nullaway-jarjar-rules.txt",
+}
+
 // Nullaway depends on the Contract annotation, but we don't have it imported into android.
 // Create a fake stub annotation to use instead.
 genrule {
@@ -106,6 +115,6 @@ java_library {
     host_supported: true,
 
     srcs: [
-        "annotations/src/**/*.java"
+        "annotations/src/**/*.java",
     ],
 }
